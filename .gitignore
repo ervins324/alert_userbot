@@ -1,0 +1,6 @@
+# Create .gitignore and add rules for Go binaries and environment files
+.env
+*.env
+*.exe
+monitor.exe
+vendor/
