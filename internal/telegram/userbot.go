@@ -113,7 +113,7 @@ func (u *UserBot) Run(ctx context.Context, mode Mode) error {
 	})
 
 	u.client = telegram.NewClient(u.appID, u.appHash, telegram.Options{
-		SessionStorage: session.NewFileStorage(u.sessionFile, 0o600),
+		SessionStorage: &session.FileStorage{Path: u.sessionFile},
 		UpdateHandler:  dispatcher,
 		Device:         telegram.DeviceTDesktopWindows(),
 	})
@@ -197,9 +197,7 @@ func (u *UserBot) resolveSource(ctx context.Context) error {
 			u.fromPeer = ch.AsInputPeer()
 			// Ensure membership so we receive channel updates.
 			if !ch.Left && !ch.Megagroup {
-				if _, err := u.api.ChannelsJoinChannel(ctx, &tg.ChannelsJoinChannelRequest{
-					Channel: ch.AsInput(),
-				}); err != nil {
+				if _, err := u.api.ChannelsJoinChannel(ctx, ch.AsInput()); err != nil {
 					u.logger.Warn("could not join source channel (may already be a member)",
 						slog.String("channel", u.sourceChannel), slog.String("err", err.Error()))
 				}
@@ -317,8 +315,10 @@ func (u *UserBot) findPeerInDialogs(ctx context.Context, s string) (tg.InputPeer
 			// Page forward using the last message as the offset.
 			if len(d.Messages) > 0 {
 				last := d.Messages[len(d.Messages)-1]
-				req.OffsetDate = last.GetDate()
-				req.OffsetID = last.GetID()
+				if lm, ok := last.(*tg.Message); ok {
+					req.OffsetDate = lm.GetDate()
+					req.OffsetID = lm.GetID()
+				}
 			}
 		default:
 			return nil, fmt.Errorf("unexpected dialogs response %T", res)

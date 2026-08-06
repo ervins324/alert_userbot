@@ -7,3 +7,5 @@ monitor
 monitor-linux-amd64
 vendor/
 monitor.exe~
+session.bin
+*.session

@@ -3,13 +3,14 @@ package config
 import (
 	"os"
 	"testing"
-	"time"
 )
 
 func TestLoadConfigSuccess(t *testing.T) {
-	os.Setenv("TELEGRAM_BOT_TOKEN", "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11")
-	os.Setenv("DESTINATION_CHAT_ID", "-100123456789")
-	defer os.Unsetenv("TELEGRAM_BOT_TOKEN")
+	os.Setenv("TG_API_ID", "12345")
+	os.Setenv("TG_API_HASH", "0123456789abcdef0123456789abcdef")
+	os.Setenv("DESTINATION_CHAT_ID", "1134564474")
+	defer os.Unsetenv("TG_API_ID")
+	defer os.Unsetenv("TG_API_HASH")
 	defer os.Unsetenv("DESTINATION_CHAT_ID")
 
 	cfg, err := Load()
@@ -22,43 +23,49 @@ func TestLoadConfigSuccess(t *testing.T) {
 	if cfg.SourceChannel != "mon1tor_ua" {
 		t.Errorf("unexpected source channel %s", cfg.SourceChannel)
 	}
-	if cfg.DestinationChatID != "-100123456789" {
+	if cfg.DestinationChatID != "1134564474" {
 		t.Errorf("unexpected dest chat %s", cfg.DestinationChatID)
 	}
-}
-
-func TestLoadConfigFallsBackToTelegramChatID(t *testing.T) {
-	os.Setenv("TELEGRAM_BOT_TOKEN", "token")
-	os.Setenv("TELEGRAM_CHAT_ID", "1134564474")
-	os.Unsetenv("DESTINATION_CHAT_ID")
-	defer os.Unsetenv("TELEGRAM_BOT_TOKEN")
-	defer os.Unsetenv("TELEGRAM_CHAT_ID")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if cfg.TelegramAPIID != 12345 {
+		t.Errorf("unexpected api id %d", cfg.TelegramAPIID)
 	}
-	if cfg.DestinationChatID != "1134564474" {
-		t.Errorf("expected fallback chat id, got %s", cfg.DestinationChatID)
+	if cfg.SessionFile != "session.bin" {
+		t.Errorf("unexpected session file %s", cfg.SessionFile)
 	}
 }
 
-func TestLoadConfigMissingToken(t *testing.T) {
-	os.Unsetenv("TELEGRAM_BOT_TOKEN")
+func TestLoadConfigMissingAPIID(t *testing.T) {
+	os.Unsetenv("TG_API_ID")
+	os.Unsetenv("TG_API_HASH")
 	os.Setenv("DESTINATION_CHAT_ID", "123")
 	defer os.Unsetenv("DESTINATION_CHAT_ID")
 
 	_, err := Load()
 	if err == nil {
-		t.Fatalf("expected error for missing token")
+		t.Fatalf("expected error for missing TG_API_ID")
+	}
+}
+
+func TestLoadConfigMissingAPIHash(t *testing.T) {
+	os.Setenv("TG_API_ID", "12345")
+	os.Unsetenv("TG_API_HASH")
+	os.Setenv("DESTINATION_CHAT_ID", "123")
+	defer os.Unsetenv("TG_API_ID")
+	defer os.Unsetenv("DESTINATION_CHAT_ID")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected error for missing TG_API_HASH")
 	}
 }
 
 func TestLoadConfigMissingChatID(t *testing.T) {
-	os.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	os.Setenv("TG_API_ID", "12345")
+	os.Setenv("TG_API_HASH", "hash")
 	os.Unsetenv("DESTINATION_CHAT_ID")
 	os.Unsetenv("TELEGRAM_CHAT_ID")
-	defer os.Unsetenv("TELEGRAM_BOT_TOKEN")
+	defer os.Unsetenv("TG_API_ID")
+	defer os.Unsetenv("TG_API_HASH")
 
 	_, err := Load()
 	if err == nil {
@@ -66,26 +73,23 @@ func TestLoadConfigMissingChatID(t *testing.T) {
 	}
 }
 
-func TestCustomDurationsAndInts(t *testing.T) {
-	os.Setenv("TELEGRAM_BOT_TOKEN", "token")
+func TestLoadConfigCustomQueueCapacity(t *testing.T) {
+	os.Setenv("TG_API_ID", "12345")
+	os.Setenv("TG_API_HASH", "hash")
 	os.Setenv("DESTINATION_CHAT_ID", "123")
-	os.Setenv("POLL_INTERVAL", "5s")
-	os.Setenv("WORKER_COUNT", "8")
+	os.Setenv("QUEUE_CAPACITY", "500")
 	defer func() {
-		os.Unsetenv("TELEGRAM_BOT_TOKEN")
+		os.Unsetenv("TG_API_ID")
+		os.Unsetenv("TG_API_HASH")
 		os.Unsetenv("DESTINATION_CHAT_ID")
-		os.Unsetenv("POLL_INTERVAL")
-		os.Unsetenv("WORKER_COUNT")
+		os.Unsetenv("QUEUE_CAPACITY")
 	}()
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.PollInterval != 5*time.Second {
-		t.Errorf("expected poll interval 5s, got %v", cfg.PollInterval)
-	}
-	if cfg.WorkerCount != 8 {
-		t.Errorf("expected worker count 8, got %d", cfg.WorkerCount)
+	if cfg.QueueCapacity != 500 {
+		t.Errorf("expected queue capacity 500, got %d", cfg.QueueCapacity)
 	}
 }
