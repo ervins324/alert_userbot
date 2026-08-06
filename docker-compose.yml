@@ -1,0 +1,19 @@
+services:
+  monitor:
+    build: .
+    image: neptun-monitor:latest
+    container_name: neptun-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Environment variables override the .env file if both are present.
+    # Pass secrets via .env or set here:
+    environment:
+      - HTTP_TIMEOUT=10s
+      - WORKER_COUNT=4
+      - QUEUE_CAPACITY=1000
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
