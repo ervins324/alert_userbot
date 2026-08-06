@@ -12,6 +12,7 @@ import (
 	"alert-userbot/internal/alert"
 	"alert-userbot/internal/client"
 	"alert-userbot/internal/filter"
+	"alert-userbot/internal/notifier"
 	"alert-userbot/internal/telegram"
 )
 
@@ -40,7 +41,14 @@ func main() {
 	state := alert.NewKyivAlertState(logger)
 	textFilter := filter.NewTextFilter(cfg.SkipPatterns)
 
-	bot := telegram.NewUserBot(
+	bot := notifier.NewTelegramBot(
+		cfg.TelegramBotToken,
+		cfg.DestinationChatID,
+		cfg.HTTPTimeout,
+		logger,
+	)
+
+	ub := telegram.NewUserBot(
 		cfg.TelegramAPIID,
 		cfg.TelegramAPIHash,
 		cfg.TelegramPhone,
@@ -48,9 +56,9 @@ func main() {
 		cfg.TelegramAuthCode,
 		cfg.SessionFile,
 		cfg.SourceChannel,
-		cfg.DestinationChatID,
 		state,
 		textFilter,
+		bot,
 		cfg.QueueCapacity,
 		logger,
 	)
@@ -78,7 +86,7 @@ func main() {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- bot.Run(ctx, mode)
+		runErr <- ub.Run(ctx, mode)
 	}()
 
 	// NEPTUN only matters for daemon mode.
@@ -104,7 +112,7 @@ func main() {
 					return
 				case <-ticker.C:
 					processed, alertFrames := neptunClient.GetStats()
-					forwarded, skipped, filtered := bot.Stats()
+					forwarded, skipped, filtered := ub.Stats()
 					logger.Info("daemon heartbeat",
 						slog.Bool("neptun_connected", neptunClient.IsConnected()),
 						slog.Bool("kyiv_alert_active", state.IsActive()),

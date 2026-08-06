@@ -14,6 +14,7 @@ import (
 // Config holds the application configuration parameters.
 type Config struct {
 	NeptunWSURL          string
+	TelegramBotToken     string
 	TelegramAPIID        int
 	TelegramAPIHash      string
 	TelegramPhone        string
@@ -26,6 +27,7 @@ type Config struct {
 	MinReconnectInterval time.Duration
 	MaxReconnectInterval time.Duration
 	QueueCapacity        int
+	HTTPTimeout          time.Duration
 }
 
 // Load loads and validates configuration from environment variables / .env.
@@ -34,6 +36,7 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		NeptunWSURL:          getEnv("NEPTUN_WS_URL", "wss://neptun.in.ua/api/v1/stream"),
+		TelegramBotToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		TelegramAPIID:        getEnvInt("TG_API_ID", 0),
 		TelegramAPIHash:      strings.TrimSpace(os.Getenv("TG_API_HASH")),
 		TelegramPhone:        strings.TrimSpace(os.Getenv("TG_PHONE")),
@@ -46,6 +49,7 @@ func Load() (*Config, error) {
 		MinReconnectInterval: getEnvDuration("MIN_RECONNECT_INTERVAL", 1*time.Second),
 		MaxReconnectInterval: getEnvDuration("MAX_RECONNECT_INTERVAL", 30*time.Second),
 		QueueCapacity:        getEnvInt("QUEUE_CAPACITY", 1000),
+		HTTPTimeout:          getEnvDuration("HTTP_TIMEOUT", 10*time.Second),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -72,6 +76,9 @@ func (c *Config) Validate() error {
 	if c.DestinationChatID == "" {
 		return ErrMissingChatID
 	}
+	if c.TelegramBotToken == "" {
+		return ErrMissingTelegramToken
+	}
 	if strings.TrimSpace(c.SourceChannel) == "" {
 		return fmt.Errorf("SOURCE_CHANNEL cannot be empty")
 	}
@@ -88,8 +95,9 @@ func (c *Config) Validate() error {
 }
 
 var (
-	ErrMissingNeptunURL = errors.New("NEPTUN_WS_URL cannot be empty")
-	ErrMissingChatID    = errors.New("DESTINATION_CHAT_ID (or TELEGRAM_CHAT_ID) environment variable is required")
+	ErrMissingNeptunURL    = errors.New("NEPTUN_WS_URL cannot be empty")
+	ErrMissingChatID       = errors.New("DESTINATION_CHAT_ID (or TELEGRAM_CHAT_ID) environment variable is required")
+	ErrMissingTelegramToken = errors.New("TELEGRAM_BOT_TOKEN environment variable is required")
 )
 
 func firstNonEmpty(vals ...string) string {
