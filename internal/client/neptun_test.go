@@ -31,6 +31,8 @@ func TestNeptunClientConnectionAndFiltering(t *testing.T) {
 		// Send test messages
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"region": "Львівська область", "status": "active"}`))
 		time.Sleep(20 * time.Millisecond)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"region": "Київська область", "status": "active"}`))
+		time.Sleep(20 * time.Millisecond)
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"region": "м. Київ", "status": "missile alert"}`))
 		time.Sleep(50 * time.Millisecond)
 	}))

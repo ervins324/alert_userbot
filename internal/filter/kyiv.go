@@ -4,9 +4,10 @@ import (
 	"bytes"
 )
 
-// KyivFilter provides zero-allocation matching for Kyiv and Kyiv Oblast threats.
+// KyivFilter provides zero-allocation matching for Kyiv city threats only.
 type KyivFilter struct {
-	patterns [][]byte
+	patterns   [][]byte // city indicators
+	exclusions [][]byte // oblast indicators to reject
 }
 
 // NewKyivFilter initializes a new filter with pre-compiled byte patterns.
@@ -19,31 +20,35 @@ func NewKyivFilter() *KyivFilter {
 			[]byte("Kyiv"),
 			[]byte("kyiv"),
 			[]byte("KYIV"),
-			[]byte("Київськ"),
-			[]byte("київськ"),
-			[]byte("КИЇВСЬК"),
 			[]byte("Kiev"),
 			[]byte("kiev"),
 			[]byte("KIEV"),
 			// Common URL encoded or escaped representations if present
 			[]byte("%D0%9A%D0%B8%D1%96%D0%B2"),
 		},
+		exclusions: [][]byte{
+			[]byte("Київськ"), // "Київська область"
+			[]byte("київськ"),
+			[]byte("КИЇВСЬК"),
+			[]byte("область"),
+			[]byte("Oblast"),
+			[]byte("oblast"),
+			[]byte("обл"),
+		},
 	}
 }
 
-// MatchResult encapsulates zero-allocation filter inspection results.
-type MatchResult struct {
-	Matched      bool
-	IsCity       bool
-	IsOblast     bool
-	MatchedLabel string
-}
-
-// IsKyivTarget returns true if the payload contains any reference to Kyiv or Kyiv Oblast.
+// IsKyivTarget returns true if the payload references Kyiv city and not Kyiv Oblast.
 // Zero heap allocations.
 func (f *KyivFilter) IsKyivTarget(payload []byte) bool {
 	if len(payload) == 0 {
 		return false
+	}
+
+	for _, excl := range f.exclusions {
+		if bytes.Contains(payload, excl) {
+			return false
+		}
 	}
 
 	for _, pattern := range f.patterns {
@@ -52,32 +57,4 @@ func (f *KyivFilter) IsKyivTarget(payload []byte) bool {
 		}
 	}
 	return false
-}
-
-// Inspect analyzes the payload and returns specific location matching metadata.
-func (f *KyivFilter) Inspect(payload []byte) MatchResult {
-	if !f.IsKyivTarget(payload) {
-		return MatchResult{Matched: false}
-	}
-
-	isOblast := bytes.Contains(payload, []byte("область")) ||
-		bytes.Contains(payload, []byte("обл")) ||
-		bytes.Contains(payload, []byte("Oblast")) ||
-		bytes.Contains(payload, []byte("oblast")) ||
-		bytes.Contains(payload, []byte("Київськ")) ||
-		bytes.Contains(payload, []byte("київськ"))
-
-	label := "м. Київ / Київська область"
-	if isOblast {
-		label = "Київська область"
-	} else if bytes.Contains(payload, []byte("м. Київ")) || bytes.Contains(payload, []byte("м.Київ")) || bytes.Contains(payload, []byte("City")) {
-		label = "м. Київ"
-	}
-
-	return MatchResult{
-		Matched:      true,
-		IsCity:       !isOblast,
-		IsOblast:     isOblast,
-		MatchedLabel: label,
-	}
 }

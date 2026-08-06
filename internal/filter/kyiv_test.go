@@ -18,8 +18,8 @@ func TestKyivFilterMatches(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Kyiv Oblast Ukrainian",
-			payload:  `{"region": "Київська область", "status": "active", "threat": "drone"}`,
+			name:     "Kyiv city Ukrainian no dot",
+			payload:  `{"region": "Київ", "status": "active"}`,
 			expected: true,
 		},
 		{
@@ -28,18 +28,33 @@ func TestKyivFilterMatches(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Kyiv Oblast English",
-			payload:  `{"region": "Kyiv Oblast", "type": "air_raid"}`,
+			name:     "Kyiv lowercase Ukrainian",
+			payload:  `{"message": "загроза бпла для київ"}`,
 			expected: true,
 		},
 		{
-			name:     "Kyiv region lowercase Ukrainian",
-			payload:  `{"message": "загроза бпла для київщини та м.київ"}`,
-			expected: true,
+			name:     "Kyiv Oblast Ukrainian (excluded)",
+			payload:  `{"region": "Київська область", "status": "active", "threat": "drone"}`,
+			expected: false,
+		},
+		{
+			name:     "Kyiv Oblast English (excluded)",
+			payload:  `{"region": "Kyiv Oblast", "type": "air_raid"}`,
+			expected: false,
+		},
+		{
+			name:     "Oblast mention even if city present (excluded)",
+			payload:  `{"region": "Київська область, м. Київ", "status": "active"}`,
+			expected: false,
 		},
 		{
 			name:     "Other region (Lviv)",
 			payload:  `{"region": "Львівська область", "status": "active"}`,
+			expected: false,
+		},
+		{
+			name:     "Other region city",
+			payload:  `{"region": "м. Харків", "status": "active"}`,
 			expected: false,
 		},
 		{
@@ -64,23 +79,9 @@ func TestKyivFilterMatches(t *testing.T) {
 	}
 }
 
-func TestInspect(t *testing.T) {
-	filter := NewKyivFilter()
-
-	resCity := filter.Inspect([]byte(`{"region": "м. Київ"}`))
-	if !resCity.Matched || resCity.MatchedLabel != "м. Київ" {
-		t.Errorf("Expected city match, got %+v", resCity)
-	}
-
-	resOblast := filter.Inspect([]byte(`{"region": "Київська область"}`))
-	if !resOblast.Matched || !resOblast.IsOblast {
-		t.Errorf("Expected oblast match, got %+v", resOblast)
-	}
-}
-
 func BenchmarkIsKyivTarget(b *testing.B) {
 	filter := NewKyivFilter()
-	payload := []byte(`{"id":12345,"region":"Київська область","threat_type":"drone","title":"Повітряна тривога в Київській області","severity":"high"}`)
+	payload := []byte(`{"id":12345,"region":"м. Київ","threat_type":"missile","title":"Повітряна тривога в Києві","severity":"high"}`)
 
 	b.ResetTimer()
 	b.ReportAllocs()
