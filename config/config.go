@@ -28,6 +28,7 @@ type Config struct {
 	MaxReconnectInterval time.Duration
 	QueueCapacity        int
 	HTTPTimeout          time.Duration
+	ForceAlert           bool
 }
 
 // Load loads and validates configuration from environment variables / .env.
@@ -50,6 +51,7 @@ func Load() (*Config, error) {
 		MaxReconnectInterval: getEnvDuration("MAX_RECONNECT_INTERVAL", 30*time.Second),
 		QueueCapacity:        getEnvInt("QUEUE_CAPACITY", 1000),
 		HTTPTimeout:          getEnvDuration("HTTP_TIMEOUT", 10*time.Second),
+		ForceAlert:           getEnvBool("FORCE_ALERT", false),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -134,8 +136,19 @@ func getEnvInt(key string, fallback int) int {
 	return fallback
 }
 
-func getEnvList(key string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
+func getEnvBool(key string, fallback bool) bool {
+	if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+		switch strings.ToLower(val) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return fallback
+}
+
+func getEnvList(key string) []string {	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return nil
 	}

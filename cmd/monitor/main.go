@@ -60,6 +60,7 @@ func main() {
 		textFilter,
 		bot,
 		cfg.QueueCapacity,
+		cfg.ForceAlert,
 		logger,
 	)
 

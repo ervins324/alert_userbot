@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,8 @@ type UserBot struct {
 	bot    *notifier.TelegramBot
 	logger *slog.Logger
 
+	forceAlert bool
+
 	client *telegram.Client
 	api    *tg.Client
 
@@ -77,6 +80,7 @@ func NewUserBot(
 	textFilter *filter.TextFilter,
 	bot *notifier.TelegramBot,
 	queueCapacity int,
+	forceAlert bool,
 	logger *slog.Logger,
 ) *UserBot {
 	if logger == nil {
@@ -94,6 +98,7 @@ func NewUserBot(
 		filter:        textFilter,
 		bot:           bot,
 		logger:        logger,
+		forceAlert:    forceAlert,
 		queue:         make(chan forwardTask, queueCapacity),
 		seen:          make(map[int]struct{}),
 	}
@@ -184,6 +189,18 @@ func (u *UserBot) askCode(ctx context.Context, sentCode *tg.AuthSentCode) (strin
 }
 
 func (u *UserBot) resolveSource(ctx context.Context) error {
+	// Private channel: SOURCE_CHANNEL is a numeric -100-prefixed ID.
+	if id, ok := parseChannelID(strings.TrimSpace(u.sourceChannel)); ok {
+		ch, err := u.findChannelInDialogs(ctx, id)
+		if err != nil {
+			return err
+		}
+		u.sourceChannelID = ch.ID
+		u.fromPeer = ch.AsInputPeer()
+		u.logger.Info("source channel resolved by ID", slog.Int64("id", ch.ID), slog.String("channel", u.sourceChannel))
+		return nil
+	}
+
 	res, err := u.api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{
 		Username: strings.TrimPrefix(u.sourceChannel, "@"),
 	})
@@ -206,6 +223,69 @@ func (u *UserBot) resolveSource(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("source channel %q is not a channel", u.sourceChannel)
+}
+
+// parseChannelID parses a Telegram chat ID. Channel IDs come as -100<id>.
+func parseChannelID(s string) (int64, bool) {
+	if strings.HasPrefix(s, "-100") && len(s) > 4 {
+		id, err := strconv.ParseInt(s[4:], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return id, true
+	}
+	return 0, false
+}
+
+// findChannelInDialogs pages the account dialogs looking for a channel by ID.
+func (u *UserBot) findChannelInDialogs(ctx context.Context, channelID int64) (*tg.Channel, error) {
+	req := &tg.MessagesGetDialogsRequest{
+		ExcludePinned: true,
+		OffsetDate:    0,
+		OffsetID:      0,
+		OffsetPeer:    &tg.InputPeerEmpty{},
+		Limit:         100,
+		Hash:          0,
+	}
+
+	for page := 0; page < 50; page++ {
+		res, err := u.api.MessagesGetDialogs(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("get dialogs: %w", err)
+		}
+
+		switch d := res.(type) {
+		case *tg.MessagesDialogs:
+			if ch := scanChannels(d.Chats, channelID); ch != nil {
+				return ch, nil
+			}
+			return nil, fmt.Errorf("channel %d not found in dialogs", channelID)
+		case *tg.MessagesDialogsSlice:
+			if ch := scanChannels(d.Chats, channelID); ch != nil {
+				return ch, nil
+			}
+			if len(d.Messages) == 0 {
+				return nil, fmt.Errorf("channel %d not found in dialogs", channelID)
+			}
+			last := d.Messages[len(d.Messages)-1]
+			if lm, ok := last.(*tg.Message); ok {
+				req.OffsetDate = lm.GetDate()
+				req.OffsetID = lm.GetID()
+			}
+		default:
+			return nil, fmt.Errorf("unexpected dialogs response %T", res)
+		}
+	}
+	return nil, fmt.Errorf("channel %d not found in dialogs (too many pages)", channelID)
+}
+
+func scanChannels(chats []tg.ChatClass, channelID int64) *tg.Channel {
+	for _, c := range chats {
+		if ch, ok := c.(*tg.Channel); ok && ch.ID == channelID {
+			return ch
+		}
+	}
+	return nil
 }
 
 // handleMessage processes a channel update and queues matching messages.
@@ -253,7 +333,8 @@ func (u *UserBot) runDaemon(ctx context.Context) error {
 	go u.worker(ctx)
 
 	u.logger.Info("userbot ready: forwarding channel posts while Kyiv alert is active",
-		slog.String("source", u.sourceChannel))
+		slog.String("source", u.sourceChannel),
+		slog.Bool("force_alert", u.forceAlert))
 
 	<-ctx.Done()
 	u.wg.Wait()
@@ -282,7 +363,7 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 		u.logger.Info("message filtered out", slog.Int("msg_id", task.msgID))
 		return
 	}
-	if !u.state.IsActive() {
+	if !u.state.IsActive() && !u.forceAlert {
 		u.skipped.Add(1)
 		u.logger.Debug("message skipped (no active alert)", slog.Int("msg_id", task.msgID))
 		return
@@ -317,7 +398,7 @@ func (u *UserBot) downloadPhoto(ctx context.Context, loc *tg.InputPhotoFileLocat
 }
 
 func (u *UserBot) testNotify() error {
-	msg := "🔔 <b>Test notification</b> — Neptun forwarder is working. If you receive this, your bot + chat are configured correctly."
+	msg := "🔔 Test notification— Neptun forwarder is working. If you receive this, your bot + chat are configured correctly."
 	if err := u.bot.SendText(msg); err != nil {
 		return fmt.Errorf("send test message: %w", err)
 	}

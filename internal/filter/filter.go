@@ -22,6 +22,7 @@ var defaultSkipPatterns = []string{
 	"долучіться",
 	"долучитись",
 	"підтримаєте",
+	"грн",
 }
 
 // NewTextFilter builds a filter from the default patterns plus any custom ones.
