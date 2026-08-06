@@ -14,16 +14,18 @@ import (
 // Config holds the application configuration parameters.
 type Config struct {
 	NeptunWSURL          string
-	TelegramBotToken     string
+	TelegramAPIID        int
+	TelegramAPIHash      string
+	TelegramPhone        string
+	TelegramPassword     string
+	TelegramAuthCode     string
+	SessionFile          string
 	DestinationChatID    string
 	SourceChannel        string
 	SkipPatterns         []string
-	PollInterval         time.Duration
 	MinReconnectInterval time.Duration
 	MaxReconnectInterval time.Duration
-	HTTPTimeout          time.Duration
 	QueueCapacity        int
-	WorkerCount          int
 }
 
 // Load loads and validates configuration from environment variables / .env.
@@ -32,16 +34,18 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		NeptunWSURL:          getEnv("NEPTUN_WS_URL", "wss://neptun.in.ua/api/v1/stream"),
-		TelegramBotToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
+		TelegramAPIID:        getEnvInt("TG_API_ID", 0),
+		TelegramAPIHash:      strings.TrimSpace(os.Getenv("TG_API_HASH")),
+		TelegramPhone:        strings.TrimSpace(os.Getenv("TG_PHONE")),
+		TelegramPassword:     os.Getenv("TG_PASSWORD"),
+		TelegramAuthCode:     strings.TrimSpace(os.Getenv("TG_AUTH_CODE")),
+		SessionFile:          getEnv("SESSION_FILE", "session.bin"),
 		DestinationChatID:    strings.TrimSpace(firstNonEmpty(os.Getenv("DESTINATION_CHAT_ID"), os.Getenv("TELEGRAM_CHAT_ID"))),
 		SourceChannel:        getEnv("SOURCE_CHANNEL", "mon1tor_ua"),
 		SkipPatterns:         getEnvList("SKIP_PATTERNS"),
-		PollInterval:         getEnvDuration("POLL_INTERVAL", 10*time.Second),
 		MinReconnectInterval: getEnvDuration("MIN_RECONNECT_INTERVAL", 1*time.Second),
 		MaxReconnectInterval: getEnvDuration("MAX_RECONNECT_INTERVAL", 30*time.Second),
-		HTTPTimeout:          getEnvDuration("HTTP_TIMEOUT", 10*time.Second),
 		QueueCapacity:        getEnvInt("QUEUE_CAPACITY", 1000),
-		WorkerCount:          getEnvInt("WORKER_COUNT", 4),
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -59,17 +63,17 @@ func (c *Config) Validate() error {
 	if !strings.HasPrefix(c.NeptunWSURL, "ws://") && !strings.HasPrefix(c.NeptunWSURL, "wss://") {
 		return fmt.Errorf("invalid NEPTUN_WS_URL scheme, must start with ws:// or wss://: %s", c.NeptunWSURL)
 	}
-	if c.TelegramBotToken == "" {
-		return ErrMissingTelegramToken
+	if c.TelegramAPIID <= 0 {
+		return fmt.Errorf("TG_API_ID is required (get it at my.telegram.org)")
+	}
+	if c.TelegramAPIHash == "" {
+		return fmt.Errorf("TG_API_HASH is required (get it at my.telegram.org)")
 	}
 	if c.DestinationChatID == "" {
 		return ErrMissingChatID
 	}
 	if strings.TrimSpace(c.SourceChannel) == "" {
 		return fmt.Errorf("SOURCE_CHANNEL cannot be empty")
-	}
-	if c.PollInterval <= 0 {
-		return fmt.Errorf("POLL_INTERVAL must be positive")
 	}
 	if c.MinReconnectInterval <= 0 {
 		return fmt.Errorf("MIN_RECONNECT_INTERVAL must be positive")
@@ -80,16 +84,12 @@ func (c *Config) Validate() error {
 	if c.QueueCapacity <= 0 {
 		return fmt.Errorf("QUEUE_CAPACITY must be positive")
 	}
-	if c.WorkerCount <= 0 {
-		return fmt.Errorf("WORKER_COUNT must be positive")
-	}
 	return nil
 }
 
 var (
 	ErrMissingNeptunURL = errors.New("NEPTUN_WS_URL cannot be empty")
-	ErrMissingTelegramToken = errors.New("TELEGRAM_BOT_TOKEN environment variable is required")
-	ErrMissingChatID        = errors.New("DESTINATION_CHAT_ID (or TELEGRAM_CHAT_ID) environment variable is required")
+	ErrMissingChatID    = errors.New("DESTINATION_CHAT_ID (or TELEGRAM_CHAT_ID) environment variable is required")
 )
 
 func firstNonEmpty(vals ...string) string {
