@@ -15,7 +15,9 @@ import (
 type Config struct {
 	NeptunWSURL          string
 	TelegramBotToken     string
-	TelegramChatID       string
+	DestinationChatID    string
+	SourceChannel        string
+	PollInterval         time.Duration
 	MinReconnectInterval time.Duration
 	MaxReconnectInterval time.Duration
 	HTTPTimeout          time.Duration
@@ -23,14 +25,16 @@ type Config struct {
 	WorkerCount          int
 }
 
-// Load loads and validates configuration from environment variables.
+// Load loads and validates configuration from environment variables / .env.
 func Load() (*Config, error) {
 	_ = godotenv.Load() // optional; real env vars take precedence
 
 	cfg := &Config{
 		NeptunWSURL:          getEnv("NEPTUN_WS_URL", "wss://neptun.in.ua/api/v1/stream"),
 		TelegramBotToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
-		TelegramChatID:       strings.TrimSpace(os.Getenv("TELEGRAM_CHAT_ID")),
+		DestinationChatID:    strings.TrimSpace(firstNonEmpty(os.Getenv("DESTINATION_CHAT_ID"), os.Getenv("TELEGRAM_CHAT_ID"))),
+		SourceChannel:        getEnv("SOURCE_CHANNEL", "mon1tor_ua"),
+		PollInterval:         getEnvDuration("POLL_INTERVAL", 10*time.Second),
 		MinReconnectInterval: getEnvDuration("MIN_RECONNECT_INTERVAL", 1*time.Second),
 		MaxReconnectInterval: getEnvDuration("MAX_RECONNECT_INTERVAL", 30*time.Second),
 		HTTPTimeout:          getEnvDuration("HTTP_TIMEOUT", 10*time.Second),
@@ -45,7 +49,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// Validate checks if required configuration values are set and valid.
+// Validate checks required configuration values.
 func (c *Config) Validate() error {
 	if c.NeptunWSURL == "" {
 		return ErrMissingNeptunURL
@@ -56,8 +60,14 @@ func (c *Config) Validate() error {
 	if c.TelegramBotToken == "" {
 		return ErrMissingTelegramToken
 	}
-	if c.TelegramChatID == "" {
-		return ErrMissingTelegramChatID
+	if c.DestinationChatID == "" {
+		return ErrMissingChatID
+	}
+	if strings.TrimSpace(c.SourceChannel) == "" {
+		return fmt.Errorf("SOURCE_CHANNEL cannot be empty")
+	}
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("POLL_INTERVAL must be positive")
 	}
 	if c.MinReconnectInterval <= 0 {
 		return fmt.Errorf("MIN_RECONNECT_INTERVAL must be positive")
@@ -75,10 +85,19 @@ func (c *Config) Validate() error {
 }
 
 var (
-	ErrMissingNeptunURL      = errors.New("NEPTUN_WS_URL cannot be empty")
-	ErrMissingTelegramToken  = errors.New("TELEGRAM_BOT_TOKEN environment variable is required")
-	ErrMissingTelegramChatID = errors.New("TELEGRAM_CHAT_ID environment variable is required")
+	ErrMissingNeptunURL = errors.New("NEPTUN_WS_URL cannot be empty")
+	ErrMissingTelegramToken = errors.New("TELEGRAM_BOT_TOKEN environment variable is required")
+	ErrMissingChatID        = errors.New("DESTINATION_CHAT_ID (or TELEGRAM_CHAT_ID) environment variable is required")
 )
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 func getEnv(key, fallback string) string {
 	if val := strings.TrimSpace(os.Getenv(key)); val != "" {

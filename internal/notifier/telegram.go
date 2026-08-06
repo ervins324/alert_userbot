@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"strings"
@@ -15,13 +16,14 @@ import (
 	"time"
 )
 
-// TelegramNotifier sends low-latency notifications to Telegram.
-type TelegramNotifier struct {
+// TelegramBot sends messages (text and photos) to a destination chat via the
+// Telegram Bot API using a non-blocking worker pool.
+type TelegramBot struct {
 	token      string
 	chatID     string
 	apiURL     string
 	httpClient *http.Client
-	queue      chan alertTask
+	queue      chan notifyTask
 	bufferPool sync.Pool
 	wg         sync.WaitGroup
 	ctx        context.Context
@@ -30,20 +32,23 @@ type TelegramNotifier struct {
 	closed     atomic.Bool
 }
 
-type alertTask struct {
-	text      string
-	parseMode string
-	retries   int
+type notifyKind int
+
+const (
+	taskMessage notifyKind = iota
+	taskPhoto
+)
+
+type notifyTask struct {
+	kind     notifyKind
+	text     string
+	image    []byte
+	filename string
+	retries  int
 }
 
-type telegramRequest struct {
-	ChatID    string `json:"chat_id"`
-	Text      string `json:"text"`
-	ParseMode string `json:"parse_mode,omitempty"`
-}
-
-// NewTelegramNotifier creates a new low-latency Telegram notifier instance.
-func NewTelegramNotifier(token, chatID string, workerCount, queueCapacity int, timeout time.Duration, logger *slog.Logger) *TelegramNotifier {
+// NewTelegramBot creates a new Telegram Bot API client.
+func NewTelegramBot(token, chatID string, workerCount, queueCapacity int, timeout time.Duration, logger *slog.Logger) *TelegramBot {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -69,12 +74,12 @@ func NewTelegramNotifier(token, chatID string, workerCount, queueCapacity int, t
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	tn := &TelegramNotifier{
+	tb := &TelegramBot{
 		token:      token,
 		chatID:     chatID,
-		apiURL:     fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token),
+		apiURL:     "https://api.telegram.org",
 		httpClient: client,
-		queue:      make(chan alertTask, queueCapacity),
+		queue:      make(chan notifyTask, queueCapacity),
 		bufferPool: sync.Pool{
 			New: func() any {
 				return new(bytes.Buffer)
@@ -85,75 +90,69 @@ func NewTelegramNotifier(token, chatID string, workerCount, queueCapacity int, t
 		logger: logger,
 	}
 
-	// Start worker pool
 	for i := 0; i < workerCount; i++ {
-		tn.wg.Add(1)
-		go tn.worker(i)
+		tb.wg.Add(1)
+		go tb.worker(i)
 	}
 
-	// Pre-warm TCP/TLS connections
-	go tn.prewarm()
+	go tb.prewarm()
 
-	return tn
+	return tb
 }
 
-// Notify enqueues a notification text immediately without blocking (0ms delay).
-func (tn *TelegramNotifier) Notify(text string) bool {
-	if tn.closed.Load() {
+// SendMessage enqueues a text message to the destination chat. Returns false
+// if the notifier is closed or the queue is full (never blocks).
+func (tb *TelegramBot) SendMessage(text string) bool {
+	return tb.enqueue(notifyTask{kind: taskMessage, text: text})
+}
+
+// SendPhoto enqueues a photo (with optional caption) to the destination chat.
+func (tb *TelegramBot) SendPhoto(caption string, image []byte, filename string) bool {
+	return tb.enqueue(notifyTask{kind: taskPhoto, text: caption, image: image, filename: filename})
+}
+
+func (tb *TelegramBot) enqueue(task notifyTask) bool {
+	if tb.closed.Load() {
 		return false
 	}
-
-	task := alertTask{
-		text:      text,
-		parseMode: "HTML",
-		retries:   0,
-	}
-
 	select {
-	case tn.queue <- task:
+	case tb.queue <- task:
 		return true
 	default:
-		tn.logger.Error("Telegram notification queue full, message dropped to prevent latency degradation",
-			slog.String("text_snippet", snippet(text, 50)))
+		tb.logger.Error("Telegram queue full, message dropped", slog.String("snippet", snippet(task.text, 50)))
 		return false
 	}
 }
 
-// NotifyRaw constructs and enqueues a notification from raw NEPTUN alert bytes.
-func (tn *TelegramNotifier) NotifyRaw(payload []byte) bool {
-	// Construct concise HTML message
-	text := fmt.Sprintf("🚨 <b>AIR DEFENSE ALERT — KYIV REGION</b> 🚨\n\n<code>%s</code>", escapeHTML(string(payload)))
-	return tn.Notify(text)
-}
-
-func (tn *TelegramNotifier) worker(id int) {
-	defer tn.wg.Done()
+func (tb *TelegramBot) worker(id int) {
+	defer tb.wg.Done()
 	for {
 		select {
-		case <-tn.ctx.Done():
-			// Drain remaining tasks in queue without re-queuing
+		case <-tb.ctx.Done():
 			for {
 				select {
-				case task, ok := <-tn.queue:
+				case task, ok := <-tb.queue:
 					if !ok {
 						return
 					}
-					_ = tn.sendHTTP(task)
+					_ = tb.send(task)
 				default:
 					return
 				}
 			}
-		case task, ok := <-tn.queue:
+		case task, ok := <-tb.queue:
 			if !ok {
 				return
 			}
-			if err := tn.sendHTTP(task); err != nil {
-				tn.logger.Error("Failed to send Telegram notification", slog.Int("worker_id", id), slog.String("error", err.Error()))
+			if err := tb.send(task); err != nil {
+				tb.logger.Error("Failed to send Telegram message",
+					slog.Int("worker_id", id),
+					slog.String("err", tb.sanitize(err.Error())))
 				if task.retries < 2 {
 					task.retries++
 					select {
-					case <-tn.ctx.Done():
-					case tn.queue <- task:
+					case <-tb.ctx.Done():
+					case tb.queue <- task:
 					default:
 					}
 				}
@@ -162,89 +161,127 @@ func (tn *TelegramNotifier) worker(id int) {
 	}
 }
 
-func (tn *TelegramNotifier) sendHTTP(task alertTask) error {
-	buf := tn.bufferPool.Get().(*bytes.Buffer)
+func (tb *TelegramBot) send(task notifyTask) error {
+	switch task.kind {
+	case taskMessage:
+		return tb.sendMessage(task.text)
+	case taskPhoto:
+		return tb.sendPhoto(task.text, task.image, task.filename)
+	}
+	return fmt.Errorf("unknown task kind")
+}
+
+type sendMessageReq struct {
+	ChatID    string `json:"chat_id"`
+	Text      string `json:"text"`
+	ParseMode string `json:"parse_mode"`
+}
+
+func (tb *TelegramBot) sendMessage(text string) error {
+	buf := tb.bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
-	defer tn.bufferPool.Put(buf)
+	defer tb.bufferPool.Put(buf)
 
-	reqPayload := telegramRequest{
-		ChatID:    tn.chatID,
-		Text:      task.text,
-		ParseMode: task.parseMode,
+	if err := json.NewEncoder(buf).Encode(sendMessageReq{
+		ChatID:    tb.chatID,
+		Text:      text,
+		ParseMode: "HTML",
+	}); err != nil {
+		return fmt.Errorf("json encode: %w", err)
 	}
 
-	if err := json.NewEncoder(buf).Encode(reqPayload); err != nil {
-		return fmt.Errorf("json encode error: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(tn.ctx, http.MethodPost, tn.apiURL, buf)
+	req, err := http.NewRequestWithContext(tb.ctx, http.MethodPost,
+		fmt.Sprintf("%s/bot%s/sendMessage", tb.apiURL, tb.token), buf)
 	if err != nil {
-		return fmt.Errorf("http request creation failed: %w", err)
+		return fmt.Errorf("request creation: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := tn.httpClient.Do(req)
+	return tb.do(req)
+}
+
+func (tb *TelegramBot) sendPhoto(caption string, image []byte, filename string) error {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	_ = writer.WriteField("chat_id", tb.chatID)
+	if caption != "" {
+		_ = writer.WriteField("caption", caption)
+		_ = writer.WriteField("parse_mode", "HTML")
+	}
+
+	part, err := writer.CreateFormFile("photo", filename)
 	if err != nil {
-		return fmt.Errorf("http do failed: %s", tn.sanitize(err.Error()))
+		return fmt.Errorf("multipart create: %w", err)
+	}
+	if _, err := part.Write(image); err != nil {
+		return fmt.Errorf("multipart write: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("multipart close: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(tb.ctx, http.MethodPost,
+		fmt.Sprintf("%s/bot%s/sendPhoto", tb.apiURL, tb.token), body)
+	if err != nil {
+		return fmt.Errorf("request creation: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	return tb.do(req)
+}
+
+func (tb *TelegramBot) do(req *http.Request) error {
+	resp, err := tb.httpClient.Do(req)
+	if err != nil {
+		return err
 	}
 	defer resp.Body.Close()
 
-	// Discard body to enable HTTP keep-alive reuse
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("telegram API returned status code %d", resp.StatusCode)
+		return fmt.Errorf("telegram API returned status %d", resp.StatusCode)
 	}
-
 	return nil
 }
 
-// prewarm periodically sends lightweight GET requests to ensure TLS connections stay warm.
-func (tn *TelegramNotifier) sanitize(msg string) string {
-	return strings.ReplaceAll(msg, tn.token, "<REDACTED>")
+func (tb *TelegramBot) sanitize(msg string) string {
+	return strings.ReplaceAll(msg, tb.token, "<REDACTED>")
 }
 
-func (tn *TelegramNotifier) prewarm() {
+func (tb *TelegramBot) prewarm() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	getMeURL := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", tn.token)
-
-	// Perform initial warm up call
-	tn.pingTelegram(getMeURL)
+	getMeURL := fmt.Sprintf("%s/bot%s/getMe", tb.apiURL, tb.token)
 
 	for {
+		ctx, cancel := context.WithTimeout(tb.ctx, 2*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, getMeURL, nil)
+		if err == nil {
+			if resp, err := tb.httpClient.Do(req); err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+		}
+		cancel()
+
 		select {
-		case <-tn.ctx.Done():
+		case <-tb.ctx.Done():
 			return
 		case <-ticker.C:
-			tn.pingTelegram(getMeURL)
 		}
 	}
 }
 
-func (tn *TelegramNotifier) pingTelegram(url string) {
-	ctx, cancel := context.WithTimeout(tn.ctx, 2*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
+// Close stops workers after draining pending tasks.
+func (tb *TelegramBot) Close() {
+	if !tb.closed.CompareAndSwap(false, true) {
 		return
 	}
-	resp, err := tn.httpClient.Do(req)
-	if err == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}
-}
-
-// Close gracefully stops workers and flushes pending notifications.
-func (tn *TelegramNotifier) Close() {
-	if !tn.closed.CompareAndSwap(false, true) {
-		return
-	}
-	tn.cancel()
-	tn.wg.Wait()
+	tb.cancel()
+	tb.wg.Wait()
 }
 
 func snippet(s string, maxLen int) string {
@@ -252,21 +289,4 @@ func snippet(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-func escapeHTML(s string) string {
-	buf := bytes.NewBuffer(make([]byte, 0, len(s)))
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '<':
-			buf.WriteString("&lt;")
-		case '>':
-			buf.WriteString("&gt;")
-		case '&':
-			buf.WriteString("&amp;")
-		default:
-			buf.WriteByte(s[i])
-		}
-	}
-	return buf.String()
 }

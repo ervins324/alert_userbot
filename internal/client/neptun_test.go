@@ -11,60 +11,58 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"alert-userbot/internal/filter"
-	"alert-userbot/internal/notifier"
+
+	"alert-userbot/internal/alert"
 )
 
-func TestNeptunClientConnectionAndFiltering(t *testing.T) {
+func TestNeptunClientDrivesAlertState(t *testing.T) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 
-	var connectedClient *websocket.Conn
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		connectedClient = conn
-
-		// Send test messages
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"region": "Львівська область", "status": "active"}`))
+		// No Kyiv alert.
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"alerts","data":{"raions":[{"key":"львівський","name":"Львівський район","oblast":"Львівська область"}]}}`))
 		time.Sleep(20 * time.Millisecond)
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"region": "Київська область", "status": "active"}`))
+		// Kyiv city alert starts.
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"alerts","data":{"raions":[{"key":"оболонський","name":"Оболонський район","oblast":"місто Київ"}]}}`))
 		time.Sleep(20 * time.Millisecond)
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"region": "м. Київ", "status": "missile alert"}`))
-		time.Sleep(50 * time.Millisecond)
+		// Kyiv alert cleared.
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"alerts","data":{"raions":[]}}`))
+		time.Sleep(20 * time.Millisecond)
 	}))
 	defer server.Close()
 
-	// Convert http:// to ws://
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	kyivFilter := filter.NewKyivFilter()
-	telegramNotifier := notifier.NewTelegramNotifier("dummy-token", "12345", 1, 10, 1*time.Second, logger)
-	defer telegramNotifier.Close()
-
-	client := NewNeptunClient(wsURL, 10*time.Millisecond, 100*time.Millisecond, kyivFilter, telegramNotifier, logger)
+	state := alert.NewKyivAlertState(logger)
+	client := NewNeptunClient(wsURL, 10*time.Millisecond, 100*time.Millisecond, state, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	go client.Start(ctx)
 
-	// Wait for processing
-	time.Sleep(200 * time.Millisecond)
-
-	processed, matched := client.GetStats()
-	if processed < 2 {
-		t.Errorf("expected at least 2 processed messages, got %d", processed)
+	waitForState := func(want bool) bool {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if state.IsActive() == want {
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
 	}
-	if matched < 1 {
-		t.Errorf("expected at least 1 matched message for Kyiv, got %d", matched)
-	}
 
-	if connectedClient != nil {
-		_ = connectedClient.Close()
+	if !waitForState(true) {
+		t.Error("expected alert state to be active after Kyiv frame")
+	}
+	if !waitForState(false) {
+		t.Error("expected alert state to be inactive after clear frame")
 	}
 }

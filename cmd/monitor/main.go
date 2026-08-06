@@ -9,95 +9,95 @@ import (
 	"time"
 
 	"alert-userbot/config"
+	"alert-userbot/internal/alert"
 	"alert-userbot/internal/client"
-	"alert-userbot/internal/filter"
+	"alert-userbot/internal/forwarder"
 	"alert-userbot/internal/notifier"
+	"alert-userbot/internal/scraper"
 )
 
 func main() {
-	// Initialize structured JSON logger
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
 
-	// Optional test mode: verify Telegram connectivity end-to-end, then exit.
 	testNotify := len(os.Args) > 1 && os.Args[1] == "-test-notify"
 
-	logger.Info("Starting Neptun Air Defense Alert Daemon for Kyiv & Kyiv Oblast")
+	logger.Info("Starting Neptun → Telegram channel forwarder for Kyiv city")
 
-	// Load and validate configuration
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("Configuration error", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
-	logger.Info("Configuration loaded successfully",
+	logger.Info("Configuration loaded",
 		slog.String("neptun_url", cfg.NeptunWSURL),
-		slog.String("chat_id", cfg.TelegramChatID),
+		slog.String("source_channel", cfg.SourceChannel),
+		slog.String("destination_chat_id", cfg.DestinationChatID),
+		slog.Duration("poll_interval", cfg.PollInterval),
 		slog.Int("worker_count", cfg.WorkerCount),
 		slog.Int("queue_capacity", cfg.QueueCapacity))
 
-	// Initialize components
-	kyivFilter := filter.NewKyivFilter()
-
-	telegramNotifier := notifier.NewTelegramNotifier(
+	bot := notifier.NewTelegramBot(
 		cfg.TelegramBotToken,
-		cfg.TelegramChatID,
+		cfg.DestinationChatID,
 		cfg.WorkerCount,
 		cfg.QueueCapacity,
 		cfg.HTTPTimeout,
 		logger,
 	)
-	defer telegramNotifier.Close()
+	defer bot.Close()
 
-	// In test mode: send a test alert and verify the filter matches a sample Kyiv frame.
+	// Test mode: verify Telegram delivery end-to-end, then exit.
 	if testNotify {
-		sample := []byte(`{"region":"м. Київ","status":"active","threat":"test","title":"Тестова тривога для перевірки"}`)
-		if matched := kyivFilter.IsKyivTarget(sample); matched {
-			logger.Info("Filter test PASSED: sample Kyiv frame matched")
-		} else {
-			logger.Error("Filter test FAILED: sample Kyiv frame did not match")
-			os.Exit(1)
-		}
-		if ok := telegramNotifier.Notify("🔔 <b>Test notification</b> — Neptun Air Defense monitor is working correctly. If you receive this, Telegram is configured properly."); ok {
+		if bot.SendMessage("🔔 <b>Test notification</b> — Neptun forwarder is working. If you receive this, your bot + chat are configured correctly.") {
 			logger.Info("Test notification enqueued. Check your Telegram chat.")
+			time.Sleep(1 * time.Second)
 		} else {
 			logger.Error("Test notification dropped (queue full)")
 			os.Exit(1)
 		}
-		time.Sleep(1 * time.Second)
 		return
 	}
+
+	state := alert.NewKyivAlertState(logger)
 
 	neptunClient := client.NewNeptunClient(
 		cfg.NeptunWSURL,
 		cfg.MinReconnectInterval,
 		cfg.MaxReconnectInterval,
-		kyivFilter,
-		telegramNotifier,
+		state,
 		logger,
 	)
 
-	// Context for graceful shutdown
+	channelScraper := scraper.NewChannelScraper(
+		cfg.SourceChannel,
+		cfg.PollInterval,
+		cfg.HTTPTimeout,
+		logger,
+	)
+
+	fw := forwarder.New(state, bot, cfg.HTTPTimeout, logger)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle OS signals (SIGINT, SIGTERM)
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 	go func() {
 		sig := <-sigChan
 		logger.Info("Received shutdown signal", slog.String("signal", sig.String()))
 		cancel()
 	}()
 
-	// Start Neptun WebSocket client in background
-	go neptunClient.Start(ctx)
+	msgCh := make(chan scraper.Message, 128)
 
-	// Periodic status heartbeat
+	go neptunClient.Start(ctx)
+	go channelScraper.Start(ctx, msgCh)
+	go fw.Run(ctx, msgCh)
+
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
@@ -106,28 +106,24 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				processed, matched := neptunClient.GetStats()
-				connected := neptunClient.IsConnected()
-				logger.Info("Daemon heartbeat status",
-					slog.Bool("connected", connected),
-					slog.Int64("total_processed", processed),
-					slog.Int64("total_matched", matched))
+				processed, alertFrames := neptunClient.GetStats()
+				forwarded, skipped := fw.Stats()
+				logger.Info("daemon heartbeat",
+					slog.Bool("neptun_connected", neptunClient.IsConnected()),
+					slog.Bool("kyiv_alert_active", state.IsActive()),
+					slog.Int64("ws_frames_processed", processed),
+					slog.Int64("alerts_frames", alertFrames),
+					slog.Int64("messages_forwarded", forwarded),
+					slog.Int64("messages_skipped", skipped))
 			}
 		}
 	}()
 
-	// Send startup notification
-	telegramNotifier.Notify("🟢 <b>Neptun Air Defense Monitor Daemon</b> started successfully for Kyiv & Kyiv Oblast.")
-
-	// Wait for context cancellation
 	<-ctx.Done()
+	logger.Info("Shutting down forwarder...")
 
-	logger.Info("Shutting down daemon gracefully...")
-
-	// Give a small window for final flushes
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutdownCancel()
-
 	<-shutdownCtx.Done()
-	logger.Info("Neptun Air Defense Alert Daemon stopped successfully")
+	logger.Info("Forwarder stopped")
 }
