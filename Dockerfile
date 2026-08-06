@@ -14,7 +14,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/monitor
 # ---- runtime stage ----
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S monitor && adduser -S -G monitor monitor
+    && addgroup -S monitor && adduser -S -G monitor monitor \
+    && mkdir -p /app/session && chown -R monitor:monitor /app/session
 
 WORKDIR /app
 

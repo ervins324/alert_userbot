@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # The MTProto session is persisted here so the container never asks
+    # for a login code again after the first run.
     volumes:
       - neptun-session:/app/session
     environment:
