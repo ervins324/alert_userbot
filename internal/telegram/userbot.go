@@ -358,7 +358,20 @@ func (u *UserBot) worker(ctx context.Context) {
 }
 
 func (u *UserBot) process(ctx context.Context, task forwardTask) {
-	if u.filter != nil && u.filter.ShouldSkip(task.text) {
+	text := task.text
+	if cleaned, removed := filter.RemoveSignature(text); removed {
+		u.logger.Debug("channel signature removed", slog.Int("msg_id", task.msgID))
+		text = cleaned
+	}
+
+	// Nothing left to send (signature-only post without media).
+	if text == "" && task.photo == nil {
+		u.skipped.Add(1)
+		u.logger.Debug("message skipped (empty after signature removal)", slog.Int("msg_id", task.msgID))
+		return
+	}
+
+	if u.filter != nil && u.filter.ShouldSkip(text) {
 		u.filtered.Add(1)
 		u.logger.Info("message filtered out", slog.Int("msg_id", task.msgID))
 		return
@@ -377,9 +390,9 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 			u.logger.Error("photo download failed", slog.Int("msg_id", task.msgID), slog.String("err", err.Error()))
 			return
 		}
-		err = u.bot.SendPhoto(data, task.text)
+		err = u.bot.SendPhoto(data, text)
 	} else {
-		err = u.bot.SendText(task.text)
+		err = u.bot.SendText(text)
 	}
 	if err != nil {
 		u.logger.Error("send failed", slog.Int("msg_id", task.msgID), slog.String("err", err.Error()))

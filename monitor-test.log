@@ -1,26 +1,10 @@
-{"time":"2026-08-06T16:05:56.7040974+03:00","level":"INFO","msg":"Starting Neptun → Telegram MTProto forwarder for Kyiv city"}
-{"time":"2026-08-06T16:05:56.7074768+03:00","level":"INFO","msg":"Configuration loaded","neptun_url":"wss://neptun.in.ua/api/v1/stream","tg_api_id":38194144,"source_channel":"-1003550556355","destination_chat_id":"1134564474","session_file":"session.bin","queue_capacity":1000}
-{"time":"2026-08-06T16:05:56.7096133+03:00","level":"INFO","msg":"Connecting to Neptun Air Defense API stream","url":"wss://neptun.in.ua/api/v1/stream"}
-{"time":"2026-08-06T16:05:56.9335683+03:00","level":"INFO","msg":"Successfully connected to Neptun Air Defense API stream"}
-{"time":"2026-08-06T16:05:57.1267892+03:00","level":"INFO","msg":"telegram user authenticated","user_id":1134564474}
-{"time":"2026-08-06T16:05:57.2328224+03:00","level":"INFO","msg":"source channel resolved by ID","id":3550556355,"channel":"-1003550556355"}
-{"time":"2026-08-06T16:05:57.2334801+03:00","level":"INFO","msg":"userbot ready: forwarding channel posts while Kyiv alert is active","source":"-1003550556355","force_alert":true}
-{"time":"2026-08-06T16:06:56.7105573+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":8,"alerts_frames":1,"messages_forwarded":0,"messages_skipped":0,"messages_filtered":0}
-{"time":"2026-08-06T16:07:56.7098693+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":12,"alerts_frames":1,"messages_forwarded":0,"messages_skipped":0,"messages_filtered":0}
-{"time":"2026-08-06T16:08:56.70976+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":17,"alerts_frames":2,"messages_forwarded":0,"messages_skipped":0,"messages_filtered":0}
-{"time":"2026-08-06T16:09:56.7101919+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":23,"alerts_frames":3,"messages_forwarded":0,"messages_skipped":0,"messages_filtered":0}
-{"time":"2026-08-06T16:10:24.4130637+03:00","level":"INFO","msg":"sent channel message","msg_id":100}
-{"time":"2026-08-06T16:10:29.1986483+03:00","level":"INFO","msg":"sent channel message","msg_id":101}
-{"time":"2026-08-06T16:10:35.5732575+03:00","level":"INFO","msg":"sent channel message","msg_id":102}
-{"time":"2026-08-06T16:10:41.7524359+03:00","level":"INFO","msg":"sent channel message","msg_id":103}
-{"time":"2026-08-06T16:10:56.7103257+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":29,"alerts_frames":3,"messages_forwarded":4,"messages_skipped":0,"messages_filtered":0}
-{"time":"2026-08-06T16:11:19.0911853+03:00","level":"INFO","msg":"message filtered out","msg_id":104}
-{"time":"2026-08-06T16:11:31.1334631+03:00","level":"INFO","msg":"message filtered out","msg_id":105}
-{"time":"2026-08-06T16:11:34.3250065+03:00","level":"INFO","msg":"sent channel message","msg_id":106}
-{"time":"2026-08-06T16:11:56.7100954+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":34,"alerts_frames":3,"messages_forwarded":5,"messages_skipped":0,"messages_filtered":2}
-{"time":"2026-08-06T16:12:56.7102338+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":38,"alerts_frames":3,"messages_forwarded":5,"messages_skipped":0,"messages_filtered":2}
-{"time":"2026-08-06T16:13:56.7099653+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":45,"alerts_frames":3,"messages_forwarded":5,"messages_skipped":0,"messages_filtered":2}
-{"time":"2026-08-06T16:14:25.389915+03:00","level":"INFO","msg":"message filtered out","msg_id":107}
-{"time":"2026-08-06T16:14:46.1128699+03:00","level":"INFO","msg":"sent channel message","msg_id":108}
-{"time":"2026-08-06T16:14:56.709664+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":50,"alerts_frames":3,"messages_forwarded":6,"messages_skipped":0,"messages_filtered":3}
-{"time":"2026-08-06T16:15:56.7104456+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":57,"alerts_frames":3,"messages_forwarded":6,"messages_skipped":0,"messages_filtered":3}
+{"time":"2026-08-06T16:21:41.6537618+03:00","level":"INFO","msg":"Starting Neptun → Telegram MTProto forwarder for Kyiv city"}
+{"time":"2026-08-06T16:21:41.6558966+03:00","level":"INFO","msg":"Configuration loaded","neptun_url":"wss://neptun.in.ua/api/v1/stream","tg_api_id":38194144,"source_channel":"-1003550556355","destination_chat_id":"1134564474","session_file":"session.bin","queue_capacity":1000}
+{"time":"2026-08-06T16:21:41.6564107+03:00","level":"INFO","msg":"Connecting to Neptun Air Defense API stream","url":"wss://neptun.in.ua/api/v1/stream"}
+{"time":"2026-08-06T16:21:41.859961+03:00","level":"INFO","msg":"telegram user authenticated","user_id":1134564474}
+{"time":"2026-08-06T16:21:41.9129723+03:00","level":"INFO","msg":"Successfully connected to Neptun Air Defense API stream"}
+{"time":"2026-08-06T16:21:41.9681558+03:00","level":"INFO","msg":"source channel resolved by ID","id":3550556355,"channel":"-1003550556355"}
+{"time":"2026-08-06T16:21:41.9686771+03:00","level":"INFO","msg":"userbot ready: forwarding channel posts while Kyiv alert is active","source":"-1003550556355","force_alert":true}
+{"time":"2026-08-06T16:22:41.6564809+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":7,"alerts_frames":1,"messages_forwarded":0,"messages_skipped":0,"messages_filtered":0}
+{"time":"2026-08-06T16:23:21.4154948+03:00","level":"INFO","msg":"sent channel message","msg_id":110}
+{"time":"2026-08-06T16:23:31.1469591+03:00","level":"INFO","msg":"sent channel message","msg_id":111}

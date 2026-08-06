@@ -9,3 +9,7 @@ vendor/
 monitor.exe~
 session.bin
 *.session
+
+monitor-test.log
+monitor-test-err.log
+monitor-test.log
