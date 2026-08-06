@@ -58,6 +58,12 @@ func (f *Forwarder) Run(ctx context.Context, in <-chan scraper.Message) {
 	}
 }
 
+// Forward processes a single scraped message: it is sent to the destination
+// chat only while a Kyiv city air alert is active.
+func (f *Forwarder) Forward(ctx context.Context, msg scraper.Message) {
+	f.handle(ctx, msg)
+}
+
 func (f *Forwarder) handle(ctx context.Context, msg scraper.Message) {
 	if !f.state.IsActive() {
 		f.skipped++

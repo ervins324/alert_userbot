@@ -16,6 +16,13 @@ import (
 	"alert-userbot/internal/scraper"
 )
 
+func snippet(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -83,6 +90,42 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Test modes (run before the daemon loop):
+	switch {
+	case len(os.Args) > 1 && os.Args[1] == "-test-scrape":
+		msgs, err := channelScraper.Fetch(ctx)
+		if err != nil {
+			logger.Error("channel scrape failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		logger.Info("scraped messages", slog.Int("count", len(msgs)))
+		for i, m := range msgs {
+			if i >= 3 {
+				break
+			}
+			logger.Info("message", slog.Int("id", m.ID), slog.String("text", snippet(m.Text, 80)), slog.String("photo", m.PhotoURL))
+		}
+		return
+	case len(os.Args) > 1 && os.Args[1] == "-test-forward":
+		// Simulate an active alert and forward the latest channel post.
+		state.SetActive(true)
+		msgs, err := channelScraper.Fetch(ctx)
+		if err != nil {
+			logger.Error("channel scrape failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		if len(msgs) == 0 {
+			logger.Error("no messages found on channel page")
+			os.Exit(1)
+		}
+		latest := msgs[len(msgs)-1]
+		logger.Info("forwarding latest channel message (alert simulated as active)",
+			slog.Int("id", latest.ID), slog.String("text", snippet(latest.Text, 80)))
+		fw.Forward(ctx, latest)
+		time.Sleep(1 * time.Second)
+		return
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
