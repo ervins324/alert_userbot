@@ -1,4 +1,4 @@
-package forwarder
+package filter
 
 import (
 	"testing"
@@ -18,7 +18,7 @@ func TestTextFilterShouldSkip(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "donation post (donaт)",
+			name:     "donation post (донат)",
 			text:     "Перед тим як лягати відпочивати нам дуже потрібен ваш донат для ГУР МОУ на FPV",
 			expected: true,
 		},
@@ -54,7 +54,7 @@ func TestTextFilterShouldSkip(t *testing.T) {
 }
 
 func TestTextFilterCustomPatterns(t *testing.T) {
-	filter := NewTextFilter([]string{"собіраем", "кава"})
+	filter := NewTextFilter([]string{"кава"})
 
 	if !filter.ShouldSkip("підтримаєте на каву") {
 		t.Error("expected custom pattern 'кава' to match")

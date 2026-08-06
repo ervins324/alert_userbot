@@ -6,14 +6,16 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    # Environment variables override the .env file if both are present.
-    # Pass secrets via .env or set here:
+    volumes:
+      - neptun-session:/app/session
     environment:
-      - HTTP_TIMEOUT=10s
-      - WORKER_COUNT=4
+      - SESSION_FILE=/app/session/session.bin
       - QUEUE_CAPACITY=1000
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  neptun-session:
