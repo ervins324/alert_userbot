@@ -32,9 +32,11 @@ const (
 )
 
 type forwardTask struct {
-	msgID int
-	text  string
-	photo *tg.InputPhotoFileLocation
+	msgID        int
+	text         string
+	photo        *tg.InputPhotoFileLocation
+	fwdChannelID int64
+	fwdPost      int
 }
 
 // UserBot is a Telegram MTProto client (logged in as a real user) that reads
@@ -61,6 +63,7 @@ type UserBot struct {
 
 	sourceChannelID int64
 	fromPeer        tg.InputPeerClass
+	sourceChannelObj *tg.Channel
 
 	queue chan forwardTask
 	seen  map[int]struct{}
@@ -197,6 +200,7 @@ func (u *UserBot) resolveSource(ctx context.Context) error {
 		}
 		u.sourceChannelID = ch.ID
 		u.fromPeer = ch.AsInputPeer()
+		u.sourceChannelObj = ch
 		u.logger.Info("source channel resolved by ID", slog.Int64("id", ch.ID), slog.String("channel", u.sourceChannel))
 		return nil
 	}
@@ -211,6 +215,7 @@ func (u *UserBot) resolveSource(ctx context.Context) error {
 		if ch, ok := c.(*tg.Channel); ok {
 			u.sourceChannelID = ch.ID
 			u.fromPeer = ch.AsInputPeer()
+			u.sourceChannelObj = ch
 			// Ensure membership so we receive channel updates.
 			if !ch.Left && !ch.Megagroup {
 				if _, err := u.api.ChannelsJoinChannel(ctx, ch.AsInput()); err != nil {
@@ -307,25 +312,64 @@ func (u *UserBot) handleMessage(msgClass tg.MessageClass) error {
 	u.seen[msgID] = struct{}{}
 
 	select {
-	case u.queue <- forwardTask{msgID: msgID, text: m.GetMessage(), photo: photoLocation(m)}:
+	case u.queue <- forwardTask{msgID: msgID, text: m.GetMessage(), photo: photoLocation(m), fwdChannelID: fwdChannelID(m), fwdPost: fwdChannelPost(m)}:
 	default:
 		u.logger.Error("forward queue full, message dropped", slog.Int("msg_id", msgID))
 	}
 	return nil
 }
 
+// fwdChannelID returns the ID of the channel a message was forwarded from.
+func fwdChannelID(m *tg.Message) int64 {
+	if pc, ok := m.FwdFrom.FromID.(*tg.PeerChannel); ok {
+		return pc.ChannelID
+	}
+	return 0
+}
+
+// fwdChannelPost returns the original message ID in the forwarded-from channel.
+func fwdChannelPost(m *tg.Message) int {
+	if _, ok := m.FwdFrom.FromID.(*tg.PeerChannel); ok {
+		return m.FwdFrom.ChannelPost
+	}
+	return 0
+}
+
 // photoLocation extracts the original photo location from a message, if any.
+// The thumb size must be a real PhotoSize type, otherwise Telegram rejects the
+// download with FILE_REFERENCE_EXPIRED.
 func photoLocation(m *tg.Message) *tg.InputPhotoFileLocation {
 	if media, ok := m.GetMedia(); ok {
 		if mp, ok := media.(*tg.MessageMediaPhoto); ok {
 			if pc, ok := mp.GetPhoto(); ok {
 				if p, ok := pc.AsNotEmpty(); ok {
-					return p.AsInputPhotoFileLocation("")
+					return p.AsInputPhotoFileLocation(bestPhotoSizeType(p))
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// bestPhotoSizeType returns the type of the largest photo size available.
+func bestPhotoSizeType(p *tg.Photo) string {
+	bestType := ""
+	bestArea := 0
+	for _, s := range p.Sizes {
+		switch ps := s.(type) {
+		case *tg.PhotoSize:
+			if a := ps.W * ps.H; a > bestArea {
+				bestArea = a
+				bestType = ps.Type
+			}
+		case *tg.PhotoSizeProgressive:
+			if a := ps.W * ps.H; a > bestArea {
+				bestArea = a
+				bestType = ps.Type
+			}
+		}
+	}
+	return bestType
 }
 
 func (u *UserBot) runDaemon(ctx context.Context) error {
@@ -384,8 +428,13 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 
 	var err error
 	if task.photo != nil {
+		u.logger.Info("downloading photo",
+			slog.Int("msg_id", task.msgID),
+			slog.String("loc", describePhoto(task.photo)),
+			slog.Int64("fwd_channel", task.fwdChannelID),
+			slog.Int("fwd_post", task.fwdPost))
 		var data []byte
-		data, err = u.downloadPhoto(ctx, task.photo)
+		data, err = u.downloadPhoto(ctx, task)
 		if err != nil {
 			u.logger.Error("photo download failed", slog.Int("msg_id", task.msgID), slog.String("err", err.Error()))
 			return
@@ -402,12 +451,92 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 	u.logger.Info("sent channel message", slog.Int("msg_id", task.msgID))
 }
 
-func (u *UserBot) downloadPhoto(ctx context.Context, loc *tg.InputPhotoFileLocation) ([]byte, error) {
-	var buf bytes.Buffer
-	if _, err := u.client.Downloader().Download(u.api, loc).Stream(ctx, &buf); err != nil {
+// downloadPhoto downloads a photo, retrying once with a refreshed file
+// reference if the original expired. Forwarded photos are re-fetched from
+// their original channel.
+func (u *UserBot) downloadPhoto(ctx context.Context, task forwardTask) ([]byte, error) {
+	loc := task.photo
+	for attempt := 0; attempt < 2; attempt++ {
+		var buf bytes.Buffer
+		_, err := u.client.Download(loc).Stream(ctx, &buf)
+		if err == nil {
+			u.logger.Debug("photo downloaded", slog.Int("msg_id", task.msgID), slog.Int("bytes", buf.Len()))
+			return buf.Bytes(), nil
+		}
+		u.logger.Error("photo download attempt failed",
+			slog.Int("attempt", attempt), slog.Int("msg_id", task.msgID),
+			slog.String("err", err.Error()), slog.String("loc", describePhoto(loc)))
+		if attempt == 0 && isFileReferenceError(err) {
+			u.logger.Warn("file reference expired, refreshing", slog.Int("msg_id", task.msgID))
+			fresh, ferr := u.refreshPhotoLocation(ctx, task)
+			if ferr != nil {
+				return nil, fmt.Errorf("refresh file reference: %w", ferr)
+			}
+			u.logger.Info("fresh photo reference obtained", slog.Int("msg_id", task.msgID), slog.String("loc", describePhoto(fresh)))
+			loc = fresh
+			continue
+		}
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return nil, fmt.Errorf("photo download failed")
+}
+
+// describePhoto returns a compact description of a photo location for logs.
+func describePhoto(loc *tg.InputPhotoFileLocation) string {
+	if loc == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("id=%d access_hash=%d ref_len=%d thumb=%q", loc.ID, loc.AccessHash, len(loc.FileReference), loc.ThumbSize)
+}
+
+func isFileReferenceError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "FILE_REFERENCE")
+}
+
+// refreshPhotoLocation obtains a valid file reference, preferring the
+// original channel for forwarded messages.
+func (u *UserBot) refreshPhotoLocation(ctx context.Context, task forwardTask) (*tg.InputPhotoFileLocation, error) {
+	if task.fwdChannelID != 0 && task.fwdPost != 0 {
+		loc, err := u.photoFromOriginalChannel(ctx, task.fwdChannelID, task.fwdPost)
+		if err != nil {
+			u.logger.Warn("original channel lookup failed, falling back to source channel",
+				slog.Int64("channel_id", task.fwdChannelID), slog.Int("post_id", task.fwdPost), slog.String("err", err.Error()))
+		} else {
+			return loc, nil
+		}
+	}
+	return u.photoFromChannel(ctx, u.sourceChannelObj.AsInput(), task.msgID)
+}
+
+// photoFromOriginalChannel fetches the original forwarded post from the
+// channel it was originally published in.
+func (u *UserBot) photoFromOriginalChannel(ctx context.Context, channelID int64, postID int) (*tg.InputPhotoFileLocation, error) {
+	ch, err := u.findChannelInDialogs(ctx, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("find original channel %d: %w", channelID, err)
+	}
+	return u.photoFromChannel(ctx, ch.AsInput(), postID)
+}
+
+// photoFromChannel fetches a message from a channel and extracts its photo.
+func (u *UserBot) photoFromChannel(ctx context.Context, channel tg.InputChannelClass, msgID int) (*tg.InputPhotoFileLocation, error) {
+	res, err := u.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+		Channel: channel,
+		ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if msgs, ok := res.(*tg.MessagesChannelMessages); ok {
+		for _, m := range msgs.Messages {
+			if mm, ok := m.(*tg.Message); ok && mm.GetID() == msgID {
+				if loc := photoLocation(mm); loc != nil {
+					return loc, nil
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("message %d not found when refreshing file reference", msgID)
 }
 
 func (u *UserBot) testNotify() error {
@@ -458,6 +587,12 @@ func (u *UserBot) testForward(ctx context.Context) error {
 	}
 
 	u.logger.Info("test forward: sending latest channel message (alert simulated as active)", slog.Int("msg_id", latest.GetID()))
-	u.process(ctx, forwardTask{msgID: latest.GetID(), text: latest.GetMessage(), photo: photoLocation(latest)})
+	u.process(ctx, forwardTask{
+		msgID:        latest.GetID(),
+		text:         latest.GetMessage(),
+		photo:        photoLocation(latest),
+		fwdChannelID: fwdChannelID(latest),
+		fwdPost:      fwdChannelPost(latest),
+	})
 	return nil
 }

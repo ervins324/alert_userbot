@@ -8,3 +8,7 @@
 {"time":"2026-08-06T16:22:41.6564809+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":7,"alerts_frames":1,"messages_forwarded":0,"messages_skipped":0,"messages_filtered":0}
 {"time":"2026-08-06T16:23:21.4154948+03:00","level":"INFO","msg":"sent channel message","msg_id":110}
 {"time":"2026-08-06T16:23:31.1469591+03:00","level":"INFO","msg":"sent channel message","msg_id":111}
+{"time":"2026-08-06T16:23:41.6569238+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":11,"alerts_frames":1,"messages_forwarded":2,"messages_skipped":0,"messages_filtered":0}
+{"time":"2026-08-06T16:23:43.8101442+03:00","level":"INFO","msg":"sent channel message","msg_id":112}
+{"time":"2026-08-06T16:24:41.6570917+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":18,"alerts_frames":2,"messages_forwarded":3,"messages_skipped":0,"messages_filtered":0}
+{"time":"2026-08-06T16:25:41.6569463+03:00","level":"INFO","msg":"daemon heartbeat","neptun_connected":true,"kyiv_alert_active":false,"ws_frames_processed":27,"alerts_frames":2,"messages_forwarded":3,"messages_skipped":0,"messages_filtered":0}
