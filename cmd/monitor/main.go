@@ -43,7 +43,7 @@ func main() {
 		slog.String("neptun_url", cfg.NeptunWSURL),
 		slog.String("source_channel", cfg.SourceChannel),
 		slog.String("destination_chat_id", cfg.DestinationChatID),
-		slog.Duration("poll_interval", cfg.PollInterval),
+		slog.Float64("poll_interval_sec", cfg.PollInterval.Seconds()),
 		slog.Int("worker_count", cfg.WorkerCount),
 		slog.Int("queue_capacity", cfg.QueueCapacity))
 
