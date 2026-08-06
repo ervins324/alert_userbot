@@ -17,30 +17,33 @@ import (
 // Telegram bot: messages are forwarded to the destination chat only while a
 // Kyiv city air alert is active.
 type Forwarder struct {
-	state    *alert.KyivAlertState
-	bot      *notifier.TelegramBot
-	client   *http.Client
-	logger   *slog.Logger
+	state     *alert.KyivAlertState
+	bot       *notifier.TelegramBot
+	client    *http.Client
+	logger    *slog.Logger
+	filter    *TextFilter
 	forwarded int64
 	skipped   int64
+	filtered  int64
 }
 
 // New creates a Forwarder.
-func New(state *alert.KyivAlertState, bot *notifier.TelegramBot, timeout time.Duration, logger *slog.Logger) *Forwarder {
+func New(state *alert.KyivAlertState, bot *notifier.TelegramBot, filter *TextFilter, timeout time.Duration, logger *slog.Logger) *Forwarder {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Forwarder{
 		state:  state,
 		bot:    bot,
+		filter: filter,
 		logger: logger,
 		client: &http.Client{Timeout: timeout},
 	}
 }
 
-// Stats returns counts of forwarded and skipped messages.
-func (f *Forwarder) Stats() (forwarded, skipped int64) {
-	return f.forwarded, f.skipped
+// Stats returns counts of forwarded, skipped and filtered messages.
+func (f *Forwarder) Stats() (forwarded, skipped, filtered int64) {
+	return f.forwarded, f.skipped, f.filtered
 }
 
 // Run consumes scraped messages and forwards them while the alert is active.
@@ -65,6 +68,13 @@ func (f *Forwarder) Forward(ctx context.Context, msg scraper.Message) {
 }
 
 func (f *Forwarder) handle(ctx context.Context, msg scraper.Message) {
+	if f.filter != nil && f.filter.ShouldSkip(msg.Text) {
+		f.filtered++
+		f.logger.Debug("message filtered out",
+			slog.Int("msg_id", msg.ID))
+		return
+	}
+
 	if !f.state.IsActive() {
 		f.skipped++
 		f.logger.Debug("message skipped (no active alert)",

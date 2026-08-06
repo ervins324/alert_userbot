@@ -17,6 +17,7 @@ type Config struct {
 	TelegramBotToken     string
 	DestinationChatID    string
 	SourceChannel        string
+	SkipPatterns         []string
 	PollInterval         time.Duration
 	MinReconnectInterval time.Duration
 	MaxReconnectInterval time.Duration
@@ -34,6 +35,7 @@ func Load() (*Config, error) {
 		TelegramBotToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		DestinationChatID:    strings.TrimSpace(firstNonEmpty(os.Getenv("DESTINATION_CHAT_ID"), os.Getenv("TELEGRAM_CHAT_ID"))),
 		SourceChannel:        getEnv("SOURCE_CHANNEL", "mon1tor_ua"),
+		SkipPatterns:         getEnvList("SKIP_PATTERNS"),
 		PollInterval:         getEnvDuration("POLL_INTERVAL", 10*time.Second),
 		MinReconnectInterval: getEnvDuration("MIN_RECONNECT_INTERVAL", 1*time.Second),
 		MaxReconnectInterval: getEnvDuration("MAX_RECONNECT_INTERVAL", 30*time.Second),
@@ -122,4 +124,20 @@ func getEnvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func getEnvList(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

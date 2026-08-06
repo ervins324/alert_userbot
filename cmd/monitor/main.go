@@ -86,7 +86,7 @@ func main() {
 		logger,
 	)
 
-	fw := forwarder.New(state, bot, cfg.HTTPTimeout, logger)
+	fw := forwarder.New(state, bot, forwarder.NewTextFilter(cfg.SkipPatterns), cfg.HTTPTimeout, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -150,14 +150,15 @@ func main() {
 				return
 			case <-ticker.C:
 				processed, alertFrames := neptunClient.GetStats()
-				forwarded, skipped := fw.Stats()
+				forwarded, skipped, filtered := fw.Stats()
 				logger.Info("daemon heartbeat",
 					slog.Bool("neptun_connected", neptunClient.IsConnected()),
 					slog.Bool("kyiv_alert_active", state.IsActive()),
 					slog.Int64("ws_frames_processed", processed),
 					slog.Int64("alerts_frames", alertFrames),
 					slog.Int64("messages_forwarded", forwarded),
-					slog.Int64("messages_skipped", skipped))
+					slog.Int64("messages_skipped", skipped),
+					slog.Int64("messages_filtered", filtered))
 			}
 		}
 	}()
