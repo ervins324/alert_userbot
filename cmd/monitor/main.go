@@ -21,6 +21,9 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	// Optional test mode: verify Telegram connectivity end-to-end, then exit.
+	testNotify := len(os.Args) > 1 && os.Args[1] == "-test-notify"
+
 	logger.Info("Starting Neptun Air Defense Alert Daemon for Kyiv & Kyiv Oblast")
 
 	// Load and validate configuration
@@ -48,6 +51,25 @@ func main() {
 		logger,
 	)
 	defer telegramNotifier.Close()
+
+	// In test mode: send a test alert and verify the filter matches a sample Kyiv frame.
+	if testNotify {
+		sample := []byte(`{"region":"м. Київ","status":"active","threat":"test","title":"Тестова тривога для перевірки"}`)
+		if matched := kyivFilter.IsKyivTarget(sample); matched {
+			logger.Info("Filter test PASSED: sample Kyiv frame matched")
+		} else {
+			logger.Error("Filter test FAILED: sample Kyiv frame did not match")
+			os.Exit(1)
+		}
+		if ok := telegramNotifier.Notify("🔔 <b>Test notification</b> — Neptun Air Defense monitor is working correctly. If you receive this, Telegram is configured properly."); ok {
+			logger.Info("Test notification enqueued. Check your Telegram chat.")
+		} else {
+			logger.Error("Test notification dropped (queue full)")
+			os.Exit(1)
+		}
+		time.Sleep(1 * time.Second)
+		return
+	}
 
 	neptunClient := client.NewNeptunClient(
 		cfg.NeptunWSURL,
