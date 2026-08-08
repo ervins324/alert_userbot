@@ -16,6 +16,26 @@ func TestKyivAlertActive(t *testing.T) {
 			expected: true,
 		},
 		{
+			name:     "city in oblasts (м. київ)",
+			frame:    `{"type":"alerts","data":{"raions":[{"key":"бахмутський","name":"Бахмутський район","oblast":"Донецька область"}],"oblasts":[{"key":"м. київ","name":"м. Київ","oblast":"","since":"2026-08-08T00:03:00Z"}]}}`,
+			expected: true,
+		},
+		{
+			name:     "city in oblasts (місто Київ name)",
+			frame:    `{"type":"alerts","data":{"raions":[],"oblasts":[{"key":"kyivska","name":"Місто Київ","oblast":"","since":"2026-08-08T00:03:00Z"}]}}`,
+			expected: true,
+		},
+		{
+			name:     "kyiv oblast in oblasts excluded",
+			frame:    `{"type":"alerts","data":{"raions":[],"oblasts":[{"key":"київська","name":"Київська область","oblast":"","since":"2026-08-08T00:03:00Z"}]}}`,
+			expected: false,
+		},
+		{
+			name:     "crimea oblast in oblasts excluded",
+			frame:    `{"type":"alerts","data":{"raions":[],"oblasts":[{"key":"автономна республіка крим","name":"Автономна Республіка Крим","oblast":"","since":"2022-12-10T22:22:00Z"}]}}`,
+			expected: false,
+		},
+		{
 			name:     "city raion active (м. Київ)",
 			frame:    `{"type":"alerts","data":{"raions":[{"key":"печерський","name":"Печерський район","oblast":"м. Київ"}]}}`,
 			expected: true,

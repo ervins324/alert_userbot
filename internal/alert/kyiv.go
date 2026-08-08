@@ -9,12 +9,16 @@ import (
 type alertsFrame struct {
 	Type string `json:"type"`
 	Data struct {
-		Raions []struct {
-			Key    string `json:"key"`
-			Name   string `json:"name"`
-			Oblast string `json:"oblast"`
-		} `json:"raions"`
+		Raions  []alertEntry `json:"raions"`
+		Oblasts []alertEntry `json:"oblasts"`
 	} `json:"data"`
+}
+
+// alertEntry is a single raion or oblast-level alert in the NEPTUN feed.
+type alertEntry struct {
+	Key    string `json:"key"`
+	Name   string `json:"name"`
+	Oblast string `json:"oblast"`
 }
 
 // kyivCityRaions are the 10 raions belonging to the city of Kyiv. They are
@@ -42,10 +46,33 @@ func KyivAlertActive(frame []byte) bool {
 	if f.Type != "alerts" {
 		return false
 	}
+	// The city of Kyiv is a first-class "oblast" entry in the NEPTUN feed
+	// (key "м. київ"), delivered in data.oblasts, not data.raions.
+	for _, o := range f.Data.Oblasts {
+		if isKyivCityOblast(o.Key, o.Name) {
+			return true
+		}
+	}
 	for _, r := range f.Data.Raions {
 		if isKyivCityRaion(r.Key, r.Oblast) {
 			return true
 		}
+	}
+	return false
+}
+
+// isKyivCityOblast reports whether an oblast-level alert entry targets the
+// city of Kyiv (as opposed to Kyiv Oblast).
+func isKyivCityOblast(key, name string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	n := strings.ToLower(strings.TrimSpace(name))
+	switch k {
+	case "м. київ", "м.київ", "м київ", "місто київ", "київ":
+		return true
+	}
+	switch n {
+	case "м. київ", "м.київ", "м київ", "місто київ", "київ":
+		return true
 	}
 	return false
 }

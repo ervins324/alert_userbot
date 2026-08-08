@@ -29,6 +29,7 @@ const (
 	ModeDaemon Mode = iota
 	ModeTestNotify
 	ModeTestForward
+	ModeTestAlert
 )
 
 type forwardTask struct {
@@ -149,6 +150,8 @@ func (u *UserBot) Run(ctx context.Context, mode Mode) error {
 			return u.testNotify()
 		case ModeTestForward:
 			return u.testForward(ctx)
+		case ModeTestAlert:
+			return u.testAlert(ctx)
 		default:
 			return u.runDaemon(ctx)
 		}
@@ -537,6 +540,19 @@ func (u *UserBot) photoFromChannel(ctx context.Context, channel tg.InputChannelC
 		}
 	}
 	return nil, fmt.Errorf("message %d not found when refreshing file reference", msgID)
+}
+
+func (u *UserBot) testAlert(ctx context.Context) error {
+	// Simulate a real NEPTUN alerts frame where the city of Kyiv is delivered
+	// through data.oblasts (key "м. київ"), exactly as the live feed does.
+	frame := []byte(`{"type":"alerts","data":{"raions":[{"key":"бахмутський","name":"Бахмутський район","oblast":"Донецька область","since":"2026-08-05T11:44:53Z"}],"oblasts":[{"key":"м. київ","name":"м. Київ","oblast":"","since":"2026-08-08T00:03:00Z"}]}}`)
+	active := alert.KyivAlertActive(frame)
+	u.state.SetActive(active)
+	if !active {
+		return fmt.Errorf("KyivAlertActive did NOT detect the simulated alert frame (oblasts not parsed?)")
+	}
+	u.logger.Info("simulated Kyiv alert frame detected via data.oblasts (key \"м. київ\")")
+	return u.testForward(ctx)
 }
 
 func (u *UserBot) testNotify() error {

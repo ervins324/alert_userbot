@@ -82,6 +82,8 @@ func main() {
 			mode = telegram.ModeTestNotify
 		case "-test-forward":
 			mode = telegram.ModeTestForward
+		case "-test-alert":
+			mode = telegram.ModeTestAlert
 		}
 	}
 
