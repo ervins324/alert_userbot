@@ -16,6 +16,19 @@ func TestRemoveSignatureFromPost(t *testing.T) {
 	}
 }
 
+func TestRemoveSignatureWithoutHandle(t *testing.T) {
+	post := "❗️❗❗Загроза пуску балістичних ракет \"Іскандер-М\"/\"С-300\" з Курської області.\nПідписатись 👉 🚀ППО | РАДАР"
+
+	cleaned, removed := RemoveSignature(post)
+	if !removed {
+		t.Fatal("expected signature to be removed")
+	}
+	want := "❗️❗❗Загроза пуску балістичних ракет \"Іскандер-М\"/\"С-300\" з Курської області."
+	if cleaned != want {
+		t.Errorf("unexpected cleaned text: %q", cleaned)
+	}
+}
+
 func TestRemoveSignatureOnlyFooter(t *testing.T) {
 	cleaned, removed := RemoveSignature(channelSignature)
 	if !removed {

@@ -10,7 +10,10 @@ import (
 //
 //	Підписатись 👉 🚀ППО | РАДАР (https://t.me/mon1tor_ua)
 //	@mon1tor_ua
-var signatureRE = regexp.MustCompile(`(?ms)^\s*Підписатись.*?@mon1tor_ua\s*$`)
+//
+// The "@mon1tor_ua" line is optional because some posts end right after the
+// "Підписатись" line without the handle.
+var signatureRE = regexp.MustCompile(`(?m)^\s*Підписатись[^\n]*?(?:\r?\n\s*@mon1tor_ua\s*)?$`)
 
 // HasSignature reports whether the text contains the channel footer.
 func HasSignature(text string) bool {
