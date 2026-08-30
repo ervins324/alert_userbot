@@ -2,6 +2,8 @@ package notifier
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,6 +36,28 @@ func NewTelegramBot(token, chatID string, timeout time.Duration, logger *slog.Lo
 	}
 }
 
+// Update represents a Telegram Bot API update.
+type Update struct {
+	UpdateID int         `json:"update_id"`
+	Message  *BotMessage `json:"message"`
+}
+
+// BotMessage represents a message received from Telegram Bot API.
+type BotMessage struct {
+	MessageID      int         `json:"message_id"`
+	Chat           struct {
+		ID int64 `json:"id"`
+	} `json:"chat"`
+	Text           string      `json:"text"`
+	Caption        string      `json:"caption"`
+	ReplyToMessage *BotMessage `json:"reply_to_message"`
+}
+
+type getUpdatesResponse struct {
+	Ok     bool     `json:"ok"`
+	Result []Update `json:"result"`
+}
+
 // SendText sends a plain text message to the destination chat.
 func (b *TelegramBot) SendText(text string) error {
 	form := url.Values{}
@@ -43,11 +67,36 @@ func (b *TelegramBot) SendText(text string) error {
 	return b.post("/sendMessage", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
 }
 
+// SendTextReply sends a text reply to a specific message in a chat.
+func (b *TelegramBot) SendTextReply(chatID int64, text string, replyToMsgID int) error {
+	form := url.Values{}
+	targetChat := b.chatID
+	if chatID != 0 {
+		targetChat = fmt.Sprintf("%d", chatID)
+	}
+	form.Set("chat_id", targetChat)
+	form.Set("text", text)
+	if replyToMsgID > 0 {
+		form.Set("reply_to_message_id", fmt.Sprintf("%d", replyToMsgID))
+	}
+	form.Set("disable_web_page_preview", "true")
+	return b.post("/sendMessage", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
+}
+
 // SendPhoto uploads a photo with an optional caption.
 func (b *TelegramBot) SendPhoto(data []byte, caption string) error {
+	return b.SendPhotoReply(0, data, caption, 0)
+}
+
+// SendPhotoReply uploads a photo with an optional caption and reply-to message ID.
+func (b *TelegramBot) SendPhotoReply(chatID int64, data []byte, caption string, replyToMsgID int) error {
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
-	if err := w.WriteField("chat_id", b.chatID); err != nil {
+	targetChat := b.chatID
+	if chatID != 0 {
+		targetChat = fmt.Sprintf("%d", chatID)
+	}
+	if err := w.WriteField("chat_id", targetChat); err != nil {
 		return err
 	}
 	if caption != "" {
@@ -55,7 +104,12 @@ func (b *TelegramBot) SendPhoto(data []byte, caption string) error {
 			return err
 		}
 	}
-	fw, err := w.CreateFormFile("photo", "photo.jpg")
+	if replyToMsgID > 0 {
+		if err := w.WriteField("reply_to_message_id", fmt.Sprintf("%d", replyToMsgID)); err != nil {
+			return err
+		}
+	}
+	fw, err := w.CreateFormFile("photo", "map.png")
 	if err != nil {
 		return err
 	}
@@ -66,6 +120,38 @@ func (b *TelegramBot) SendPhoto(data []byte, caption string) error {
 		return err
 	}
 	return b.post("/sendPhoto", &body, w.FormDataContentType())
+}
+
+// GetUpdates fetches new updates from Telegram using long polling.
+func (b *TelegramBot) GetUpdates(ctx context.Context, offset int, timeoutSec int) ([]Update, error) {
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=%d&allowed_updates=[\"message\"]",
+		b.token, offset, timeoutSec)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	pollClient := &http.Client{
+		Timeout: time.Duration(timeoutSec+15) * time.Second,
+	}
+
+	resp, err := pollClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("getUpdates returned %d: %s", resp.StatusCode, sanitize(body))
+	}
+
+	var res getUpdatesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	return res.Result, nil
 }
 
 // post performs the API call with a small retry loop.

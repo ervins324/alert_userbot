@@ -41,6 +41,12 @@ go build -o monitor.exe ./cmd/monitor
 # diagnostics
 ./monitor.exe -test-notify     # send a test message via the bot
 ./monitor.exe -test-forward    # send the latest channel post (alert forced on)
+./monitor.exe -test-map        # generate and send a test Kyiv map to chat
+
+## Interactive Commands
+
+- `/map` (in reply to any post): Extracts Kyiv districts, neighborhoods, or landmarks from the replied message and replies with a generated Kyiv visual map highlighting the affected area and placing a pin marker.
+- `/map <location>`: Renders and sends a map for the specified Kyiv location (e.g. `/map Позняки` or `/map Оболонь`).
 ```
 
 The session is saved to `session.bin` (git-ignored). Keep it safe — it grants

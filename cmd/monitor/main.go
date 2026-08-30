@@ -11,7 +11,10 @@ import (
 	"alert-userbot/config"
 	"alert-userbot/internal/alert"
 	"alert-userbot/internal/client"
+	"alert-userbot/internal/command"
 	"alert-userbot/internal/filter"
+	"alert-userbot/internal/geomap"
+	"alert-userbot/internal/geoparse"
 	"alert-userbot/internal/notifier"
 	"alert-userbot/internal/telegram"
 )
@@ -75,6 +78,30 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	if len(os.Args) > 1 && os.Args[1] == "-test-map" {
+		sampleText := "БпЛА курсом на Дарницький район (Позняки)"
+		if len(os.Args) > 2 {
+			sampleText = os.Args[2]
+		}
+		logger.Info("Generating test map", slog.String("query", sampleText))
+		loc := geoparse.ExtractLocation(sampleText)
+		if loc == nil {
+			logger.Error("Could not extract location from test query", slog.String("query", sampleText))
+			os.Exit(1)
+		}
+		imgData, err := geomap.RenderKyivMap(loc)
+		if err != nil {
+			logger.Error("Failed to render map", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		if err := bot.SendPhoto(imgData, "🗺️ Тестова карта: "+loc.Description); err != nil {
+			logger.Error("Failed to send test map photo", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		logger.Info("Test map successfully sent to destination chat!", slog.String("location", loc.Description))
+		return
+	}
+
 	mode := telegram.ModeDaemon
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -87,14 +114,17 @@ func main() {
 		}
 	}
 
+	cmdHandler := command.NewHandler(bot, logger)
+
 	runErr := make(chan error, 1)
 	go func() {
 		runErr <- ub.Run(ctx, mode)
 	}()
 
-	// NEPTUN only matters for daemon mode.
+	// NEPTUN & Bot Command Listener only matter for daemon mode.
 	if mode == telegram.ModeDaemon {
 		go neptunClient.Start(ctx)
+		go cmdHandler.Start(ctx)
 	}
 
 	sigChan := make(chan os.Signal, 1)
