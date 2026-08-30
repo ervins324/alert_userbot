@@ -2,6 +2,7 @@
 # ---- build stage ----
 FROM golang:1.24-alpine AS builder
 WORKDIR /src
+ENV GOTOOLCHAIN=auto
 
 # Cache dependencies with Go module cache mount
 COPY go.mod go.sum ./
