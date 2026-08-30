@@ -8,39 +8,39 @@ type Coord struct {
 	Lon float64
 }
 
-// Kyiv bounding box for projection
+// Kyiv bounding box for projection (covers Kyiv city and immediate agglomeration)
 const (
-	MinLat = 50.280
-	MaxLat = 50.590
-	MinLon = 30.220
-	MaxLon = 30.820
+	MinLat = 50.250
+	MaxLat = 50.600
+	MinLon = 30.200
+	MaxLon = 30.850
 )
 
 // RaionPolygon holds the boundary coordinates and display metadata for a Kyiv district.
 type RaionPolygon struct {
-	ID        geoparse.RaionID
-	NameUA    string
-	Center    Coord
-	Boundary  []Coord
+	ID       geoparse.RaionID
+	NameUA   string
+	Center   Coord
+	Boundary []Coord
 }
 
-// RiverPolyline holds the coordinates along the Dnipro river flowing through Kyiv.
+// DniproRiverPolygon holds the coordinates along the Dnipro river flowing through Kyiv.
 var DniproRiverPolygon = []Coord{
 	// North entering Kyiv (Vyshhorod / Kyiv Reservoir dam)
-	{Lat: 50.585, Lon: 30.510},
-	{Lat: 50.560, Lon: 30.525},
+	{Lat: 50.590, Lon: 30.505},
+	{Lat: 50.565, Lon: 30.525},
 	{Lat: 50.540, Lon: 30.535},
-	// North island / Obolon / Desna confluence
-	{Lat: 50.520, Lon: 30.540},
-	{Lat: 50.500, Lon: 30.535},
+	// Obolon / Desna confluence
+	{Lat: 50.518, Lon: 30.540},
+	{Lat: 50.498, Lon: 30.535},
 	// Pivnichnyi Bridge
-	{Lat: 50.491, Lon: 50.491*0 + 30.538},
-	// Trukhaniv Island west channel / Podil
+	{Lat: 50.491, Lon: 30.538},
+	// Trukhaniv Island / Podil
 	{Lat: 50.470, Lon: 30.530},
-	{Lat: 50.460, Lon: 30.533},
-	// Havanskyi bridge / Poshtova ploshcha
+	{Lat: 50.458, Lon: 30.533},
+	// Poshtova ploshcha / Podilskyi bridge
 	{Lat: 50.455, Lon: 30.530},
-	// Metro bridge / Parkovy bridge
+	// Metro bridge / Hydropark
 	{Lat: 50.443, Lon: 30.569},
 	// Paton bridge
 	{Lat: 50.428, Lon: 30.575},
@@ -51,10 +51,11 @@ var DniproRiverPolygon = []Coord{
 	// Zhukiv island / Kozyn direction (South)
 	{Lat: 50.360, Lon: 30.580},
 	{Lat: 50.320, Lon: 30.575},
-	{Lat: 50.290, Lon: 30.570},
+	{Lat: 50.280, Lon: 30.570},
+	{Lat: 50.250, Lon: 30.570},
 }
 
-// KyivRaionBoundaries holds simplified boundary polygons for all 10 Kyiv districts.
+// KyivRaionBoundaries holds boundary polygons for all 10 Kyiv districts.
 var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 	geoparse.RaionObolonskyi: {
 		ID:     geoparse.RaionObolonskyi,
@@ -78,7 +79,7 @@ var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 		Center: Coord{Lat: 50.515, Lon: 30.615},
 		Boundary: []Coord{
 			{Lat: 50.585, Lon: 30.510}, // North border
-			{Lat: 50.570, Lon: 30.640}, // Troieshchyna North-East
+			{Lat: 50.570, Lon: 30.640}, // Troieshchyna North-East (TEC-6)
 			{Lat: 50.530, Lon: 30.700}, // Bykivnya East
 			{Lat: 50.470, Lon: 30.710}, // Brovary highway
 			{Lat: 50.465, Lon: 30.630}, // Lisovyi / Brovarskyi Ave
@@ -94,7 +95,7 @@ var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 		NameUA: "Подільський",
 		Center: Coord{Lat: 50.485, Lon: 30.435},
 		Boundary: []Coord{
-			{Lat: 50.495, Lon: 30.420}, // Vynohradar
+			{Lat: 50.495, Lon: 30.420}, // Vynohradar (Retroville)
 			{Lat: 50.480, Lon: 30.470}, // Kurenivka
 			{Lat: 50.485, Lon: 30.530}, // Havanskyi / Dnipro
 			{Lat: 50.455, Lon: 30.530}, // Poshtova Square
@@ -127,7 +128,7 @@ var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 		NameUA: "Святошинський",
 		Center: Coord{Lat: 50.455, Lon: 30.360},
 		Boundary: []Coord{
-			{Lat: 50.510, Lon: 30.370}, // Pushcha / Kotsiubynske
+			{Lat: 50.510, Lon: 30.370}, // Lavina / Berkovets
 			{Lat: 50.475, Lon: 30.410}, // Nyvky
 			{Lat: 50.450, Lon: 30.430}, // Shuliavka border
 			{Lat: 50.430, Lon: 30.390}, // Borshchahivka
@@ -162,9 +163,9 @@ var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 			{Lat: 50.455, Lon: 30.530}, // Maidan / Poshtova
 			{Lat: 50.443, Lon: 30.569}, // Metro bridge / Dnipro
 			{Lat: 50.428, Lon: 30.575}, // Paton bridge / Dnipro
-			{Lat: 50.405, Lon: 30.565}, // Vydubychi / Pivdennyi bridge
+			{Lat: 50.405, Lon: 30.565}, // Vydubychi / TEC-5
 			{Lat: 50.408, Lon: 30.525}, // Lybidska square
-			{Lat: 50.430, Lon: 30.500}, // Protasiv / Batyieva
+			{Lat: 50.430, Lon: 30.500}, // Protasiv / Klov
 			{Lat: 50.440, Lon: 30.520}, // Bessarabska square
 			{Lat: 50.455, Lon: 30.530},
 		},
@@ -180,8 +181,8 @@ var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 			{Lat: 50.360, Lon: 30.580}, // Korchuvate / Dnipro
 			{Lat: 50.290, Lon: 30.570}, // South city border / Kozyn
 			{Lat: 50.320, Lon: 30.500}, // Pyrohiv / Feofaniya
-			{Lat: 50.350, Lon: 30.430}, // Teremky / Odeska ploshcha
-			{Lat: 50.375, Lon: 30.450}, // Zhuliany border
+			{Lat: 50.350, Lon: 30.430}, // Teremky / Respublika / Odeska ploshcha
+			{Lat: 50.375, Lon: 30.450}, // Zhuliany border / Sovky
 			{Lat: 50.410, Lon: 30.490}, // Demiivka
 			{Lat: 50.408, Lon: 30.525},
 		},
@@ -193,8 +194,8 @@ var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 		Center: Coord{Lat: 50.450, Lon: 30.600},
 		Boundary: []Coord{
 			{Lat: 50.491, Lon: 30.538}, // Pivnichnyi Bridge
-			{Lat: 50.475, Lon: 30.580}, // Raiduzhnyi
-			{Lat: 50.465, Lon: 30.630}, // Lisovyi / Brovarskyi Ave
+			{Lat: 50.475, Lon: 30.580}, // Raiduzhnyi / Rusanivski Sady
+			{Lat: 50.465, Lon: 30.630}, // Lisovyi / Brovarskyi Ave (Prospekt)
 			{Lat: 50.445, Lon: 30.670}, // DVRZ border
 			{Lat: 50.430, Lon: 30.630}, // Darnytska Sq / Leningradska
 			{Lat: 50.420, Lon: 30.590}, // Berezniaky / Paton
@@ -210,11 +211,11 @@ var KyivRaionBoundaries = map[geoparse.RaionID]RaionPolygon{
 		Center: Coord{Lat: 50.405, Lon: 30.660},
 		Boundary: []Coord{
 			{Lat: 50.430, Lon: 30.630}, // Darnytska Square
-			{Lat: 50.445, Lon: 30.670}, // DVRZ
+			{Lat: 50.445, Lon: 30.670}, // DVRZ / Rembaza
 			{Lat: 50.440, Lon: 30.730}, // East border / Lis
 			{Lat: 50.360, Lon: 30.760}, // Bortnychi SE
-			{Lat: 50.340, Lon: 30.660}, // Osokorky Dachas / Dnipro South
-			{Lat: 50.398, Lon: 30.588}, // Pivdennyi bridge / Osokorky
+			{Lat: 50.340, Lon: 30.660}, // Osokorky Dachas / Nyzhni Sady
+			{Lat: 50.398, Lon: 30.588}, // Pivdennyi bridge / River Mall
 			{Lat: 50.416, Lon: 30.589}, // Darnytskyi bridge
 			{Lat: 50.420, Lon: 30.590}, // Berezniaky border
 			{Lat: 50.430, Lon: 30.630},
