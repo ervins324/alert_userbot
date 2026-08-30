@@ -43,14 +43,19 @@ var AllRaions = map[RaionID]RaionInfo{
 	RaionShevchenko:   {ID: RaionShevchenko, NameUA: "Шевченківський район", NameEN: "Shevchenkivskyi District", CenterLat: 50.4600, CenterLon: 30.4700},
 }
 
-// LocationResult represents the parsed geographic result.
+// PointMatch represents a specific point/place matched in text.
+type PointMatch struct {
+	NameUA string
+	Raion  RaionID
+	Lat    float64
+	Lon    float64
+}
+
+// LocationResult represents the parsed geographic result with all detected places.
 type LocationResult struct {
-	MatchedRaions    []RaionID
-	NeighborhoodName string
-	Latitude         float64
-	Longitude        float64
-	HasSpecificPoint bool
-	Description      string
+	MatchedRaions []RaionID
+	Points        []PointMatch
+	Description   string
 }
 
 type pointRule struct {
@@ -222,25 +227,31 @@ var raionStems = []struct {
 	{RaionHolosiivskyi, []string{"голосіїв", "голосієв", "голосіївськ"}},
 }
 
-// ExtractLocation parses text and finds any mentioned Kyiv raions, neighborhoods, bridges or landmarks.
+// ExtractLocation parses text and finds ALL mentioned Kyiv places, neighborhoods, bridges, or raions.
 func ExtractLocation(text string) *LocationResult {
 	norm := strings.ToLower(text)
 	var matchedRaions []RaionID
 	raionSet := make(map[RaionID]bool)
 
-	var specificPoint *pointRule
+	var points []PointMatch
+	seenPointNames := make(map[string]bool)
 
-	// 1. Check specific points and landmarks first
+	// 1. Check all specific points and landmarks
 	for _, p := range kyivPoints {
 		for _, alias := range p.names {
 			if strings.Contains(norm, alias) {
-				specificPoint = &p
-				raionSet[p.raion] = true
+				if !seenPointNames[p.nameUA] {
+					seenPointNames[p.nameUA] = true
+					points = append(points, PointMatch{
+						NameUA: p.nameUA,
+						Raion:  p.raion,
+						Lat:    p.lat,
+						Lon:    p.lon,
+					})
+					raionSet[p.raion] = true
+				}
 				break
 			}
-		}
-		if specificPoint != nil {
-			break
 		}
 	}
 
@@ -273,7 +284,7 @@ func ExtractLocation(text string) *LocationResult {
 		matchedRaions = append(matchedRaions, id)
 	}
 
-	if len(matchedRaions) == 0 && specificPoint == nil {
+	if len(matchedRaions) == 0 && len(points) == 0 {
 		// Generic Kyiv check
 		if strings.Contains(norm, "київ") || strings.Contains(norm, "києві") || strings.Contains(norm, "києва") {
 			return &LocationResult{
@@ -283,29 +294,28 @@ func ExtractLocation(text string) *LocationResult {
 		return nil
 	}
 
-	res := &LocationResult{
-		MatchedRaions: matchedRaions,
-	}
-
-	if specificPoint != nil {
-		res.NeighborhoodName = specificPoint.nameUA
-		res.Latitude = specificPoint.lat
-		res.Longitude = specificPoint.lon
-		res.HasSpecificPoint = true
-		raionInfo := AllRaions[specificPoint.raion]
-		res.Description = raionInfo.NameUA + " (" + specificPoint.nameUA + ")"
-	} else if len(matchedRaions) == 1 {
-		raionInfo := AllRaions[matchedRaions[0]]
-		res.Latitude = raionInfo.CenterLat
-		res.Longitude = raionInfo.CenterLon
-		res.Description = raionInfo.NameUA
-	} else if len(matchedRaions) > 1 {
-		var names []string
-		for _, id := range matchedRaions {
-			names = append(names, AllRaions[id].NameUA)
+	// If no specific neighborhood points found, use the centroid of each matched raion
+	if len(points) == 0 {
+		for _, rID := range matchedRaions {
+			info := AllRaions[rID]
+			points = append(points, PointMatch{
+				NameUA: info.NameUA,
+				Raion:  rID,
+				Lat:    info.CenterLat,
+				Lon:    info.CenterLon,
+			})
 		}
-		res.Description = strings.Join(names, ", ")
 	}
 
-	return res
+	// Build description
+	var descParts []string
+	for _, pt := range points {
+		descParts = append(descParts, pt.NameUA)
+	}
+
+	return &LocationResult{
+		MatchedRaions: matchedRaions,
+		Points:        points,
+		Description:   strings.Join(descParts, ", "),
+	}
 }

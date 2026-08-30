@@ -105,7 +105,7 @@ func (h *Handler) handleMessage(msg *notifier.BotMessage) {
 
 	// 2. Extract geographic location
 	loc := geoparse.ExtractLocation(targetText)
-	if loc == nil || (len(loc.MatchedRaions) == 0 && !loc.HasSpecificPoint) {
+	if loc == nil || (len(loc.MatchedRaions) == 0 && len(loc.Points) == 0) {
 		noLocMsg := "⚠️ Не вдалося розпізнати район або орієнтир у Києві.\nСпробуйте уточнити: /map [назва району/масиву] (наприклад: /map Дарницький або /map Борщагівка)"
 		_ = h.bot.SendTextReply(msg.Chat.ID, noLocMsg, msg.MessageID)
 		return
