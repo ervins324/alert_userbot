@@ -2,57 +2,177 @@ package geomap
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	_ "image/jpeg"
+	"io"
 	"math"
+	"net/http"
+	"net/url"
+	"sync"
+	"time"
 
 	"alert-userbot/internal/geoparse"
 )
 
-const (
-	CanvasWidth  = 1000
-	CanvasHeight = 850
-	MarginLeft   = 40
-	MarginRight  = 40
-	MarginTop    = 80
-	MarginBottom = 40
-)
-
-// Project converts (lat, lon) to (x, y) canvas pixel coordinates.
-func Project(lat, lon float64, width, height int) (int, int) {
-	// Linear equirectangular projection for local Kyiv bounds
-	usableW := float64(width - MarginLeft - MarginRight)
-	usableH := float64(height - MarginTop - MarginBottom)
-
-	normX := (lon - MinLon) / (MaxLon - MinLon)
-	// Invert Y because canvas Y grows downwards while Lat grows upwards
-	normY := 1.0 - ((lat - MinLat) / (MaxLat - MinLat))
-
-	x := int(float64(MarginLeft) + normX*usableW)
-	y := int(float64(MarginTop) + normY*usableH)
-	return x, y
+// MapConfig holds configuration for the map renderer.
+type MapConfig struct {
+	GoogleMapsAPIKey string
 }
 
-// RenderKyivMap generates a PNG map of Kyiv highlighting the matched location.
-func RenderKyivMap(loc *geoparse.LocationResult) ([]byte, error) {
-	img := image.NewRGBA(image.Rect(0, 0, CanvasWidth, CanvasHeight))
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
 
-	// 1. Fill background with dark tactical slate
-	bgCol := color.RGBA{R: 15, G: 20, B: 28, A: 255}
-	draw.Draw(img, img.Bounds(), &image.Uniform{C: bgCol}, image.Point{}, draw.Src)
-
-	// 2. Draw subtle grid lines
-	gridCol := color.RGBA{R: 24, G: 32, B: 46, A: 255}
-	for x := MarginLeft; x < CanvasWidth-MarginRight; x += 80 {
-		drawLine(img, x, MarginTop, x, CanvasHeight-MarginBottom, gridCol, 1)
-	}
-	for y := MarginTop; y < CanvasHeight-MarginBottom; y += 80 {
-		drawLine(img, MarginLeft, y, CanvasWidth-MarginRight, y, gridCol, 1)
+// RenderKyivMap generates a high-resolution map image using Google Maps Static API (if key present)
+// or by stitching real OpenStreetMap / CartoDB street map tiles.
+func RenderKyivMap(loc *geoparse.LocationResult, apiKey string) ([]byte, error) {
+	// 1. Try Google Maps Static API first if API key is configured
+	if apiKey != "" {
+		imgBytes, err := fetchGoogleStaticMap(loc, apiKey)
+		if err == nil && len(imgBytes) > 0 {
+			return imgBytes, nil
+		}
 	}
 
-	// 3. Highlighted raion set
+	// 2. Fallback to real street map tile stitcher
+	return renderRealTileMap(loc)
+}
+
+// fetchGoogleStaticMap requests a high-resolution roadmap from Google Maps Static API.
+func fetchGoogleStaticMap(loc *geoparse.LocationResult, apiKey string) ([]byte, error) {
+	baseURL := "https://maps.googleapis.com/maps/api/staticmap"
+	params := url.Values{}
+
+	// Center on Kyiv or target point
+	centerLat := 50.4501
+	centerLon := 30.5234
+	zoom := "11" // Zoom 11 shows entire Kyiv city
+
+	if loc != nil && loc.Latitude > 0 && loc.Longitude > 0 {
+		centerLat = loc.Latitude
+		centerLon = loc.Longitude
+		zoom = "11"
+	}
+
+	params.Set("center", fmt.Sprintf("%.5f,%.5f", centerLat, centerLon))
+	params.Set("zoom", zoom)
+	params.Set("size", "640x500")
+	params.Set("scale", "2") // High-DPI 1280x1000 image
+	params.Set("maptype", "roadmap")
+	params.Set("format", "png")
+	params.Set("key", apiKey)
+
+	// Add marker pin for target location
+	if loc != nil && loc.Latitude > 0 && loc.Longitude > 0 {
+		markerParam := fmt.Sprintf("color:red|size:mid|%.5f,%.5f", loc.Latitude, loc.Longitude)
+		params.Add("markers", markerParam)
+	}
+
+	// Add polygon path for highlighted district
+	if loc != nil && len(loc.MatchedRaions) > 0 {
+		for _, rID := range loc.MatchedRaions {
+			if poly, ok := KyivRaionBoundaries[rID]; ok && len(poly.Boundary) > 0 {
+				pathParam := "color:0xff1744ff|weight:3|fillcolor:0xff174428"
+				for _, pt := range poly.Boundary {
+					pathParam += fmt.Sprintf("|%.5f,%.5f", pt.Lat, pt.Lon)
+				}
+				params.Add("path", pathParam)
+			}
+		}
+	}
+
+	reqURL := baseURL + "?" + params.Encode()
+	resp, err := httpClient.Get(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("google static map returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// renderRealTileMap fetches and stitches real Web Mercator map tiles (CartoDB / OSM)
+// and overlays district boundary highlights, Google Maps-style pin marker, and header banner.
+func renderRealTileMap(loc *geoparse.LocationResult) ([]byte, error) {
+	zoom := 11
+
+	// Bounding coordinates covering Kyiv city and immediate agglomeration
+	latMin, latMax := 50.260, 50.590
+	lonMin, lonMax := 30.220, 30.820
+
+	tileXMin, tileYMin := latLonToTile(latMax, lonMin, zoom)
+	tileXMax, tileYMax := latLonToTile(latMin, lonMax, zoom)
+
+	cols := tileXMax - tileXMin + 1
+	rows := tileYMax - tileYMin + 1
+	tileSize := 256
+
+	canvasW := cols * tileSize
+	canvasH := rows * tileSize
+
+	stitched := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
+
+	// Download and stitch tiles in parallel
+	var wg sync.WaitGroup
+	type tileResult struct {
+		x, y int
+		img  image.Image
+	}
+	resChan := make(chan tileResult, cols*rows)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	for ty := tileYMin; ty <= tileYMax; ty++ {
+		for tx := tileXMin; tx <= tileXMax; tx++ {
+			wg.Add(1)
+			go func(tileX, tileY int) {
+				defer wg.Done()
+				img := fetchMapTile(ctx, zoom, tileX, tileY)
+				if img != nil {
+					resChan <- tileResult{x: tileX, y: tileY, img: img}
+				}
+			}(tx, ty)
+		}
+	}
+
+	wg.Wait()
+	close(resChan)
+
+	tileCount := 0
+	for res := range resChan {
+		destX := (res.x - tileXMin) * tileSize
+		destY := (res.y - tileYMin) * tileSize
+		draw.Draw(stitched, image.Rect(destX, destY, destX+tileSize, destY+tileSize), res.img, image.Point{}, draw.Over)
+		tileCount++
+	}
+
+	// Projection helper for overlaying onto the stitched tile canvas
+	projectTile := func(lat, lon float64) (int, int) {
+		gx, gy := latLonToGlobalPixel(lat, lon, zoom)
+		minGX, minGY := float64(tileXMin*tileSize), float64(tileYMin*tileSize)
+		px := int(gx - minGX)
+		py := int(gy - minGY)
+		return px, py
+	}
+
+	// If no online tiles were downloaded (offline fallback), draw clean slate basemap
+	if tileCount == 0 {
+		bgCol := color.RGBA{R: 24, G: 32, B: 44, A: 255}
+		draw.Draw(stitched, stitched.Bounds(), &image.Uniform{C: bgCol}, image.Point{}, draw.Src)
+	}
+
+	// Draw highlighted raion polygons onto the real map
 	highlightedSet := make(map[geoparse.RaionID]bool)
 	if loc != nil {
 		for _, r := range loc.MatchedRaions {
@@ -60,130 +180,160 @@ func RenderKyivMap(loc *geoparse.LocationResult) ([]byte, error) {
 		}
 	}
 
-	// 4. Draw normal raion polygons
-	normalFill := color.RGBA{R: 26, G: 35, B: 50, A: 255}
-	normalBorder := color.RGBA{R: 50, G: 68, B: 95, A: 255}
-
-	highlightFill := color.RGBA{R: 180, G: 40, B: 45, A: 210}
-	highlightBorder := color.RGBA{R: 255, G: 70, B: 75, A: 255}
+	highlightFill := color.RGBA{R: 235, G: 50, B: 65, A: 75}
+	highlightBorder := color.RGBA{R: 235, G: 50, B: 65, A: 240}
+	normalBorder := color.RGBA{R: 80, G: 110, B: 150, A: 160}
 
 	for id, raion := range KyivRaionBoundaries {
+		pts := make([]image.Point, len(raion.Boundary))
+		for i, c := range raion.Boundary {
+			px, py := projectTile(c.Lat, c.Lon)
+			pts[i] = image.Point{X: px, Y: py}
+		}
+
 		if highlightedSet[id] {
-			continue
+			fillPolygon(stitched, pts, highlightFill)
+			drawPolyline(stitched, pts, highlightBorder, 4)
+		} else {
+			drawPolyline(stitched, pts, normalBorder, 2)
 		}
-		polyPoints := coordsToPoints(raion.Boundary, CanvasWidth, CanvasHeight)
-		fillPolygon(img, polyPoints, normalFill)
-		drawPolyline(img, polyPoints, normalBorder, 2)
 	}
 
-	// 5. Draw Dnipro River
-	riverPoints := coordsToPoints(DniproRiverPolygon, CanvasWidth, CanvasHeight)
-	riverCol := color.RGBA{R: 28, G: 75, B: 125, A: 255}
-	riverBorderCol := color.RGBA{R: 40, G: 105, B: 170, A: 255}
-	drawPolyline(img, riverPoints, riverCol, 18)
-	drawPolyline(img, riverPoints, riverBorderCol, 3)
-
-	// 6. Draw highlighted raions on top
+	// Draw district labels
 	for id, raion := range KyivRaionBoundaries {
-		if !highlightedSet[id] {
-			continue
-		}
-		polyPoints := coordsToPoints(raion.Boundary, CanvasWidth, CanvasHeight)
-		fillPolygon(img, polyPoints, highlightFill)
-		drawPolyline(img, polyPoints, highlightBorder, 3)
-	}
-
-	// 7. Draw District Labels
-	labelNormalCol := color.RGBA{R: 130, G: 150, B: 175, A: 255}
-	labelHighlightCol := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-
-	for id, raion := range KyivRaionBoundaries {
-		cx, cy := Project(raion.Center.Lat, raion.Center.Lon, CanvasWidth, CanvasHeight)
+		cx, cy := projectTile(raion.Center.Lat, raion.Center.Lon)
 		name := raion.NameUA
 		w, h := MeasureText(name, 1)
 
-		isHigh := highlightedSet[id]
-		col := labelNormalCol
-		if isHigh {
-			col = labelHighlightCol
-			// Draw badge under highlighted label
-			fillBadge(img, cx-w/2-6, cy-h/2-4, w+12, h+8, color.RGBA{R: 120, G: 20, B: 25, A: 220})
-			drawRect(img, cx-w/2-6, cy-h/2-4, w+12, h+8, highlightBorder, 1)
+		if highlightedSet[id] {
+			fillBadge(stitched, cx-w/2-6, cy-h/2-4, w+12, h+8, color.RGBA{R: 200, G: 30, B: 45, A: 230})
+			drawRect(stitched, cx-w/2-6, cy-h/2-4, w+12, h+8, color.RGBA{R: 255, G: 255, B: 255, A: 255}, 1)
+			DrawText(stitched, name, cx-w/2, cy-h/2, 1, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+		} else {
+			fillBadge(stitched, cx-w/2-4, cy-h/2-3, w+8, h+6, color.RGBA{R: 20, G: 25, B: 35, A: 180})
+			DrawText(stitched, name, cx-w/2, cy-h/2, 1, color.RGBA{R: 220, G: 230, B: 245, A: 255})
 		}
-		DrawText(img, name, cx-w/2, cy-h/2, 1, col)
 	}
 
-	// 8. Draw pinpoint marker if specific coordinates / neighborhood found
-	if loc != nil && loc.HasSpecificPoint && loc.Latitude > 0 && loc.Longitude > 0 {
-		px, py := Project(loc.Latitude, loc.Longitude, CanvasWidth, CanvasHeight)
-		drawPinMarker(img, px, py, loc.NeighborhoodName)
+	// Draw Google Maps-style pinpoint marker 📍
+	if loc != nil && loc.Latitude > 0 && loc.Longitude > 0 {
+		px, py := projectTile(loc.Latitude, loc.Longitude)
+		drawGoogleStylePin(stitched, px, py, loc.NeighborhoodName)
 	}
 
-	// 9. Draw Header Info Card
-	drawHeaderCard(img, loc)
+	// Draw Header Info Card
+	drawTopHeader(stitched, loc)
 
-	// 10. Encode to PNG
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
+	if err := png.Encode(&buf, stitched); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-func coordsToPoints(coords []Coord, w, h int) []image.Point {
-	pts := make([]image.Point, len(coords))
-	for i, c := range coords {
-		x, y := Project(c.Lat, c.Lon, w, h)
-		pts[i] = image.Point{X: x, Y: y}
+// fetchMapTile downloads a map tile from CartoDB Voyager or OpenStreetMap.
+func fetchMapTile(ctx context.Context, zoom, x, y int) image.Image {
+	urls := []string{
+		fmt.Sprintf("https://a.basemaps.cartocdn.com/rastertiles/voyager/%d/%d/%d.png", zoom, x, y),
+		fmt.Sprintf("https://tile.openstreetmap.org/%d/%d/%d.png", zoom, x, y),
 	}
-	return pts
-}
 
-func drawHeaderCard(img *image.RGBA, loc *geoparse.LocationResult) {
-	cardX := 30
-	cardY := 15
-	cardW := CanvasWidth - 60
-	cardH := 55
+	for _, u := range urls {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "KyivAirAlertMonitor/1.0")
 
-	fillBadge(img, cardX, cardY, cardW, cardH, color.RGBA{R: 20, G: 28, B: 40, A: 240})
-	drawRect(img, cardX, cardY, cardW, cardH, color.RGBA{R: 60, G: 80, B: 110, A: 255}, 1)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
 
-	// Status title
-	title := "КАРТА КИЄВА — ЛОКАЛІЗАЦІЯ ОБ'ЄКТА / ПОДІЇ"
-	DrawText(img, title, cardX+16, cardY+10, 1, color.RGBA{R: 140, G: 165, B: 195, A: 255})
-
-	// Subtitle with target details
-	target := "м. Київ"
-	targetCol := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	if loc != nil && loc.Description != "" {
-		target = "ЛОКАЦІЯ: " + loc.Description
-		if len(loc.MatchedRaions) > 0 {
-			targetCol = color.RGBA{R: 255, G: 90, B: 95, A: 255}
+		if resp.StatusCode == http.StatusOK {
+			img, _, err := image.Decode(resp.Body)
+			if err == nil {
+				return img
+			}
 		}
 	}
-	DrawText(img, target, cardX+16, cardY+28, 2, targetCol)
+	return nil
 }
 
-func drawPinMarker(img *image.RGBA, x, y int, label string) {
-	// Marker outer pulsing glow / rings
-	drawCircle(img, x, y, 16, color.RGBA{R: 255, G: 50, B: 60, A: 100}, 2)
-	drawCircle(img, x, y, 10, color.RGBA{R: 255, G: 30, B: 40, A: 200}, 3)
-	drawCircle(img, x, y, 4, color.RGBA{R: 255, G: 255, B: 255, A: 255}, 4)
+// latLonToTile converts lat/lon to Web Mercator tile index at given zoom.
+func latLonToTile(lat, lon float64, zoom int) (int, int) {
+	n := math.Pow(2, float64(zoom))
+	x := int((lon + 180.0) / 360.0 * n)
+	latRad := lat * math.Pi / 180.0
+	y := int((1.0 - math.Log(math.Tan(latRad)+1.0/math.Cos(latRad))/math.Pi) / 2.0 * n)
+	return x, y
+}
 
-	// Label badge above pin
+// latLonToGlobalPixel converts lat/lon to global pixel coordinates at given zoom.
+func latLonToGlobalPixel(lat, lon float64, zoom int) (float64, float64) {
+	n := math.Pow(2, float64(zoom)) * 256.0
+	gx := (lon + 180.0) / 360.0 * n
+	latRad := lat * math.Pi / 180.0
+	gy := (1.0 - math.Log(math.Tan(latRad)+1.0/math.Cos(latRad))/math.Pi) / 2.0 * n
+	return gx, gy
+}
+
+// drawGoogleStylePin renders an authentic Google Maps-style red drop pin with shadow.
+func drawGoogleStylePin(img *image.RGBA, x, y int, label string) {
+	pinHeadY := y - 22
+	radius := 12
+
+	// Drop shadow
+	drawCircle(img, x+3, y+2, 8, color.RGBA{R: 0, G: 0, B: 0, A: 90}, 6)
+
+	// Pin needle tip (triangle connecting head to point x, y)
+	fillPolygon(img, []image.Point{
+		{X: x - 6, Y: pinHeadY + 4},
+		{X: x + 6, Y: pinHeadY + 4},
+		{X: x, Y: y},
+	}, color.RGBA{R: 217, G: 48, B: 37, A: 255})
+
+	// Red circular pin head (Google Maps Red #D93025)
+	drawCircle(img, x, pinHeadY, radius, color.RGBA{R: 217, G: 48, B: 37, A: 255}, radius)
+	drawCircle(img, x, pinHeadY, radius+1, color.RGBA{R: 180, G: 20, B: 20, A: 255}, 1)
+
+	// White inner dot
+	drawCircle(img, x, pinHeadY, 4, color.RGBA{R: 255, G: 255, B: 255, A: 255}, 4)
+
+	// Pin label badge above marker
 	if label != "" {
 		w, h := MeasureText(label, 1)
 		bx := x - w/2 - 8
-		by := y - 32
-		fillBadge(img, bx, by, w+16, h+8, color.RGBA{R: 20, G: 20, B: 30, A: 240})
-		drawRect(img, bx, by, w+16, h+8, color.RGBA{R: 255, G: 60, B: 70, A: 255}, 1)
-		DrawText(img, label, bx+8, by+4, 1, color.RGBA{R: 255, G: 255, B: 255, A: 255})
-		// Small connector line to pin
-		drawLine(img, x, by+h+8, x, y-10, color.RGBA{R: 255, G: 60, B: 70, A: 255}, 1)
+		by := y - 48
+		fillBadge(img, bx, by, w+16, h+8, color.RGBA{R: 255, G: 255, B: 255, A: 245})
+		drawRect(img, bx, by, w+16, h+8, color.RGBA{R: 217, G: 48, B: 37, A: 255}, 2)
+		DrawText(img, label, bx+8, by+4, 1, color.RGBA{R: 30, G: 30, B: 30, A: 255})
+		// Pointer stem
+		drawLine(img, x, by+h+8, x, pinHeadY-radius-1, color.RGBA{R: 217, G: 48, B: 37, A: 255}, 2)
 	}
 }
 
-// Drawing primitives: fillPolygon, drawLine, drawPolyline, fillBadge, drawRect, drawCircle
+func drawTopHeader(img *image.RGBA, loc *geoparse.LocationResult) {
+	cardX := 20
+	cardY := 12
+	cardW := img.Rect.Dx() - 40
+	cardH := 52
+
+	fillBadge(img, cardX, cardY, cardW, cardH, color.RGBA{R: 255, G: 255, B: 255, A: 245})
+	drawRect(img, cardX, cardY, cardW, cardH, color.RGBA{R: 217, G: 48, B: 37, A: 255}, 2)
+
+	title := "КАРТА КИЄВА — ЛОКАЛІЗАЦІЯ ОБ'ЄКТА"
+	DrawText(img, title, cardX+14, cardY+8, 1, color.RGBA{R: 100, G: 100, B: 100, A: 255})
+
+	target := "м. Київ"
+	if loc != nil && loc.Description != "" {
+		target = "📍 " + loc.Description
+	}
+	DrawText(img, target, cardX+14, cardY+24, 2, color.RGBA{R: 217, G: 48, B: 37, A: 255})
+}
+
+// Basic raster drawing helpers
 
 func fillPolygon(img *image.RGBA, pts []image.Point, col color.RGBA) {
 	if len(pts) < 3 {
@@ -201,8 +351,8 @@ func fillPolygon(img *image.RGBA, pts []image.Point, col color.RGBA) {
 	if minY < 0 {
 		minY = 0
 	}
-	if maxY >= CanvasHeight {
-		maxY = CanvasHeight - 1
+	if maxY >= img.Rect.Dy() {
+		maxY = img.Rect.Dy() - 1
 	}
 
 	for y := minY; y <= maxY; y++ {
@@ -217,7 +367,6 @@ func fillPolygon(img *image.RGBA, pts []image.Point, col color.RGBA) {
 			j = i
 		}
 
-		// Sort nodeX
 		for i := 0; i < len(nodeX); i++ {
 			for k := i + 1; k < len(nodeX); k++ {
 				if nodeX[i] > nodeX[k] {
@@ -226,15 +375,14 @@ func fillPolygon(img *image.RGBA, pts []image.Point, col color.RGBA) {
 			}
 		}
 
-		// Fill between pairs
 		for i := 0; i+1 < len(nodeX); i += 2 {
 			x1 := nodeX[i]
 			x2 := nodeX[i+1]
 			if x1 < 0 {
 				x1 = 0
 			}
-			if x2 >= CanvasWidth {
-				x2 = CanvasWidth - 1
+			if x2 >= img.Rect.Dx() {
+				x2 = img.Rect.Dx() - 1
 			}
 			for x := x1; x <= x2; x++ {
 				blendPixel(img, x, y, col)
@@ -244,7 +392,7 @@ func fillPolygon(img *image.RGBA, pts []image.Point, col color.RGBA) {
 }
 
 func blendPixel(img *image.RGBA, x, y int, src color.RGBA) {
-	if x < 0 || x >= CanvasWidth || y < 0 || y >= CanvasHeight {
+	if x < 0 || x >= img.Rect.Dx() || y < 0 || y >= img.Rect.Dy() {
 		return
 	}
 	if src.A == 255 {

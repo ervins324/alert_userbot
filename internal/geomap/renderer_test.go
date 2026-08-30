@@ -16,7 +16,7 @@ func TestRenderKyivMap(t *testing.T) {
 		Description:      "Дарницький район (Позняки)",
 	}
 
-	data, err := RenderKyivMap(loc)
+	data, err := RenderKyivMap(loc, "")
 	if err != nil {
 		t.Fatalf("RenderKyivMap failed: %v", err)
 	}

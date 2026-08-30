@@ -89,7 +89,7 @@ func main() {
 			logger.Error("Could not extract location from test query", slog.String("query", sampleText))
 			os.Exit(1)
 		}
-		imgData, err := geomap.RenderKyivMap(loc)
+		imgData, err := geomap.RenderKyivMap(loc, cfg.GoogleMapsAPIKey)
 		if err != nil {
 			logger.Error("Failed to render map", slog.String("error", err.Error()))
 			os.Exit(1)
@@ -114,7 +114,7 @@ func main() {
 		}
 	}
 
-	cmdHandler := command.NewHandler(bot, logger)
+	cmdHandler := command.NewHandler(bot, cfg.GoogleMapsAPIKey, logger)
 
 	runErr := make(chan error, 1)
 	go func() {
