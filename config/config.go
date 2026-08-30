@@ -29,7 +29,6 @@ type Config struct {
 	QueueCapacity        int
 	HTTPTimeout          time.Duration
 	ForceAlert           bool
-	GoogleMapsAPIKey     string
 }
 
 // Load loads and validates configuration from environment variables / .env.
@@ -53,7 +52,6 @@ func Load() (*Config, error) {
 		QueueCapacity:        getEnvInt("QUEUE_CAPACITY", 1000),
 		HTTPTimeout:          getEnvDuration("HTTP_TIMEOUT", 10*time.Second),
 		ForceAlert:           getEnvBool("FORCE_ALERT", false),
-		GoogleMapsAPIKey:     strings.TrimSpace(firstNonEmpty(os.Getenv("GOOGLE_MAPS_API_KEY"), os.Getenv("GMAPS_API_KEY"))),
 	}
 
 	if err := cfg.Validate(); err != nil {

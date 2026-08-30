@@ -16,7 +16,6 @@ func TestRenderKyivMap(t *testing.T) {
 		Description: "Позняки, Троєщина",
 	}
 
-	// Test URL builder or fallback
 	if len(loc.Points) != 2 {
 		t.Fatalf("expected 2 points, got %d", len(loc.Points))
 	}

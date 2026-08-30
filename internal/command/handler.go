@@ -14,20 +14,18 @@ import (
 
 // Handler processes interactive bot commands such as /map.
 type Handler struct {
-	bot              *notifier.TelegramBot
-	googleMapsAPIKey string
-	logger           *slog.Logger
+	bot    *notifier.TelegramBot
+	logger *slog.Logger
 }
 
 // NewHandler creates a new bot command handler.
-func NewHandler(bot *notifier.TelegramBot, googleMapsAPIKey string, logger *slog.Logger) *Handler {
+func NewHandler(bot *notifier.TelegramBot, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Handler{
-		bot:              bot,
-		googleMapsAPIKey: googleMapsAPIKey,
-		logger:           logger,
+		bot:    bot,
+		logger: logger,
 	}
 }
 
@@ -112,7 +110,7 @@ func (h *Handler) handleMessage(msg *notifier.BotMessage) {
 	}
 
 	// 3. Render map image
-	imgData, err := geomap.RenderKyivMap(loc, h.googleMapsAPIKey)
+	imgData, err := geomap.RenderKyivMap(loc)
 	if err != nil {
 		h.logger.Error("failed to render map", slog.String("err", err.Error()))
 		_ = h.bot.SendTextReply(msg.Chat.ID, "❌ Помилка генерації карти", msg.MessageID)
