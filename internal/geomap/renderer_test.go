@@ -6,7 +6,24 @@ import (
 	"alert-userbot/internal/geoparse"
 )
 
-func TestRenderKyivMap(t *testing.T) {
+func TestRenderKyivMapDistrictArea(t *testing.T) {
+	// Test rendering district area (e.g. Darnytskyi district polygon)
+	loc := &geoparse.LocationResult{
+		MatchedRaions: []geoparse.RaionID{geoparse.RaionDarnytskyi},
+		Description:   "Дарницький район",
+	}
+
+	data, err := RenderKyivMap(loc)
+	if err != nil {
+		t.Fatalf("RenderKyivMap failed for district area: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatalf("RenderKyivMap returned empty PNG data")
+	}
+}
+
+func TestRenderKyivMapMultiPoints(t *testing.T) {
+	// Test rendering multiple point markers on OpenStreetMap
 	loc := &geoparse.LocationResult{
 		MatchedRaions: []geoparse.RaionID{geoparse.RaionDarnytskyi, geoparse.RaionDesnyanskyi},
 		Points: []geoparse.PointMatch{
@@ -16,7 +33,11 @@ func TestRenderKyivMap(t *testing.T) {
 		Description: "Позняки, Троєщина",
 	}
 
-	if len(loc.Points) != 2 {
-		t.Fatalf("expected 2 points, got %d", len(loc.Points))
+	data, err := RenderKyivMap(loc)
+	if err != nil {
+		t.Fatalf("RenderKyivMap failed for multi-points: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatalf("RenderKyivMap returned empty PNG data")
 	}
 }

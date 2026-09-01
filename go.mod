@@ -6,7 +6,17 @@ require github.com/gorilla/websocket v1.5.3 // direct
 
 require github.com/joho/godotenv v1.5.1
 
-require golang.org/x/net v0.57.0 // indirect
+require (
+	github.com/flopp/go-coordsparser v0.0.0-20250311184423-61a7ff62d17c // indirect
+	github.com/flopp/go-staticmaps v0.0.0-20260318105611-d3eb636a6468 // indirect
+	github.com/fogleman/gg v1.3.0 // indirect
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
+	github.com/golang/geo v0.0.0-20260302211937-87f5a40ea07a // indirect
+	github.com/mazznoer/csscolorparser v0.1.8 // indirect
+	github.com/tkrajina/gpxgo v1.4.0 // indirect
+	golang.org/x/image v0.28.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
+)
 
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect

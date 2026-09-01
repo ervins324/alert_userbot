@@ -294,23 +294,16 @@ func ExtractLocation(text string) *LocationResult {
 		return nil
 	}
 
-	// If no specific neighborhood points found, use the centroid of each matched raion
-	if len(points) == 0 {
-		for _, rID := range matchedRaions {
-			info := AllRaions[rID]
-			points = append(points, PointMatch{
-				NameUA: info.NameUA,
-				Raion:  rID,
-				Lat:    info.CenterLat,
-				Lon:    info.CenterLon,
-			})
-		}
-	}
-
 	// Build description
 	var descParts []string
-	for _, pt := range points {
-		descParts = append(descParts, pt.NameUA)
+	if len(points) > 0 {
+		for _, pt := range points {
+			descParts = append(descParts, pt.NameUA)
+		}
+	} else {
+		for _, rID := range matchedRaions {
+			descParts = append(descParts, AllRaions[rID].NameUA)
+		}
 	}
 
 	return &LocationResult{
