@@ -52,12 +52,14 @@ type UserBot struct {
 	sessionFile   string
 	sourceChannel string
 
-	state  *alert.KyivAlertState
-	filter *filter.TextFilter
-	bot    *notifier.TelegramBot
+	state     *alert.KyivAlertState
+	filter    *filter.TextFilter
+	geoFilter *filter.GeoFilter
+	bot       *notifier.TelegramBot
 	logger *slog.Logger
 
-	forceAlert bool
+	forceAlert    bool
+	sessionExists bool // set by checkSession, used by ensureAuth for diagnostics
 
 	client *telegram.Client
 	api    *tg.Client
@@ -82,6 +84,7 @@ func NewUserBot(
 	appHash, phone, password, authCode, sessionFile, sourceChannel string,
 	state *alert.KyivAlertState,
 	textFilter *filter.TextFilter,
+	geoFilter *filter.GeoFilter,
 	bot *notifier.TelegramBot,
 	queueCapacity int,
 	forceAlert bool,
@@ -100,6 +103,7 @@ func NewUserBot(
 		sourceChannel: sourceChannel,
 		state:         state,
 		filter:        textFilter,
+		geoFilter:     geoFilter,
 		bot:           bot,
 		logger:        logger,
 		forceAlert:    forceAlert,
@@ -115,6 +119,10 @@ func (u *UserBot) Stats() (forwarded, skipped, filtered int64) {
 
 // Run connects, authenticates and runs the userbot until ctx is canceled.
 func (u *UserBot) Run(ctx context.Context, mode Mode) error {
+	if err := u.checkSession(); err != nil {
+		return err
+	}
+
 	dispatcher := tg.NewUpdateDispatcher()
 	dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {
 		return u.handleMessage(update.Message)
@@ -164,9 +172,23 @@ func (u *UserBot) ensureAuth(ctx context.Context) error {
 		return err
 	}
 	if status.Authorized {
+		u.logger.Info("session restored from file (already authorized)",
+			slog.String("session_file", u.sessionFile))
 		return nil
 	}
+
+	// Session is NOT authorized — either first time or session expired.
+	if u.sessionExists {
+		u.logger.Warn("session file exists but is not authorized — "+
+			"session may have expired or been revoked by Telegram",
+			slog.String("session_file", u.sessionFile))
+	}
+
 	if u.phone == "" {
+		if u.sessionExists {
+			return fmt.Errorf("session file %q exists but the session is expired; "+
+				"set TG_PHONE in .env to re-authenticate", u.sessionFile)
+		}
 		return fmt.Errorf("TG_PHONE is required for first-time login")
 	}
 
@@ -177,8 +199,33 @@ func (u *UserBot) ensureAuth(ctx context.Context) error {
 		authenticator = auth.CodeOnly(u.phone, auth.CodeAuthenticatorFunc(u.askCode))
 	}
 
-	u.logger.Info("performing first-time Telegram login", slog.String("phone", u.phone))
+	u.logger.Info("performing Telegram login", slog.String("phone", u.phone))
 	return auth.NewFlow(authenticator, auth.SendCodeOptions{}).Run(ctx, u.client.Auth())
+}
+
+// checkSession verifies whether the session file exists and validates that
+// the required credentials are available for first-time login.
+func (u *UserBot) checkSession() error {
+	info, err := os.Stat(u.sessionFile)
+	if os.IsNotExist(err) {
+		u.sessionExists = false
+		u.logger.Warn("session file not found — first-time login required",
+			slog.String("session_file", u.sessionFile))
+		if u.phone == "" {
+			return fmt.Errorf("session file %q does not exist and TG_PHONE is not set; "+
+				"cannot perform first-time login — set TG_PHONE in .env", u.sessionFile)
+		}
+		u.logger.Info("TG_PHONE is set, will proceed with interactive authentication")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot access session file %q: %w", u.sessionFile, err)
+	}
+	u.sessionExists = true
+	u.logger.Info("existing session file found",
+		slog.String("session_file", u.sessionFile),
+		slog.Int64("size_bytes", info.Size()))
+	return nil
 }
 
 // askCode returns the login code from TG_AUTH_CODE env or prompts on stdin.
@@ -421,6 +468,11 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 	if u.filter != nil && u.filter.ShouldSkip(text) {
 		u.filtered.Add(1)
 		u.logger.Info("message filtered out", slog.Int("msg_id", task.msgID))
+		return
+	}
+	if u.geoFilter != nil && u.geoFilter.ShouldSkip(text) {
+		u.filtered.Add(1)
+		u.logger.Info("message filtered by geography", slog.Int("msg_id", task.msgID))
 		return
 	}
 	if !u.state.IsActive() && !u.forceAlert {

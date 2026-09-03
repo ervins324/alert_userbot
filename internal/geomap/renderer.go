@@ -3,7 +3,6 @@ package geomap
 import (
 	"bytes"
 	"fmt"
-	"image/color"
 	"image/png"
 	"math"
 
@@ -14,42 +13,21 @@ import (
 )
 
 // RenderKyivMap generates an OpenStreetMap static map using go-staticmaps.
-// - Markers are omitted; the map zooms in and frames the requested location.
-// - District areas are drawn with border outline only (no background fill).
+// The map zooms in and frames the requested location without drawing markers or overlays.
 func RenderKyivMap(loc *geoparse.LocationResult) ([]byte, error) {
 	ctx := sm.NewContext()
 	ctx.SetTileProvider(sm.NewTileProviderOpenStreetMaps())
 	ctx.SetSize(1000, 750)
 	ctx.SetUserAgent("KyivAirAlertMonitor/1.0 (https://github.com/alert-userbot)")
 
-	hasObjects := false
-
-	// 1. Highlight District Areas: Border outline only (no fill)
-	if loc != nil && len(loc.MatchedRaions) > 0 {
-		borderColor := color.RGBA{R: 217, G: 48, B: 37, A: 245} // Bold Red border outline
-
-		for _, rID := range loc.MatchedRaions {
-			if poly, ok := KyivRaionBoundaries[rID]; ok && len(poly.Boundary) > 0 {
-				var positions []s2.LatLng
-				for _, pt := range poly.Boundary {
-					positions = append(positions, s2.LatLngFromDegrees(pt.Lat, pt.Lon))
-				}
-				// Draw outline path with 3.5px width and zero fill
-				path := sm.NewPath(positions, borderColor, 3.5)
-				ctx.AddObject(path)
-				hasObjects = true
-			}
-		}
-	}
-
-	// 2. Zoom to requested specific locations (without drawing pin markers)
+	// 1. Zoom to requested specific locations (without drawing pin markers)
 	if loc != nil && len(loc.Points) > 0 {
-		if len(loc.Points) == 1 && len(loc.MatchedRaions) == 0 {
+		if len(loc.Points) == 1 {
 			// Single specific location: zoom directly into the neighborhood (zoom 14)
 			pt := loc.Points[0]
 			ctx.SetCenter(s2.LatLngFromDegrees(pt.Lat, pt.Lon))
 			ctx.SetZoom(14)
-		} else if len(loc.Points) > 1 && len(loc.MatchedRaions) == 0 {
+		} else {
 			// Multiple specific locations: calculate bounding center and zoom to frame all places
 			minLat, maxLat := loc.Points[0].Lat, loc.Points[0].Lat
 			minLon, maxLon := loc.Points[0].Lon, loc.Points[0].Lon
@@ -90,7 +68,29 @@ func RenderKyivMap(loc *geoparse.LocationResult) ([]byte, error) {
 				ctx.SetZoom(13)
 			}
 		}
-	} else if !hasObjects {
+	} else if loc != nil && len(loc.MatchedRaions) > 0 {
+		// Raions matched but no specific points: center on raion polygon centers
+		sumLat, sumLon := 0.0, 0.0
+		count := 0
+		for _, rID := range loc.MatchedRaions {
+			if poly, ok := KyivRaionBoundaries[rID]; ok {
+				sumLat += poly.Center.Lat
+				sumLon += poly.Center.Lon
+				count++
+			}
+		}
+		if count > 0 {
+			ctx.SetCenter(s2.LatLngFromDegrees(sumLat/float64(count), sumLon/float64(count)))
+			if count == 1 {
+				ctx.SetZoom(13)
+			} else {
+				ctx.SetZoom(11)
+			}
+		} else {
+			ctx.SetCenter(s2.LatLngFromDegrees(50.4501, 30.5234))
+			ctx.SetZoom(11)
+		}
+	} else {
 		// General overview of Kyiv
 		ctx.SetCenter(s2.LatLngFromDegrees(50.4501, 30.5234))
 		ctx.SetZoom(11)

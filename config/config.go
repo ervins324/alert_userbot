@@ -24,6 +24,7 @@ type Config struct {
 	DestinationChatID    string
 	SourceChannel        string
 	SkipPatterns         []string
+	ExcludedRegions      []string
 	MinReconnectInterval time.Duration
 	MaxReconnectInterval time.Duration
 	QueueCapacity        int
@@ -47,6 +48,7 @@ func Load() (*Config, error) {
 		DestinationChatID:    strings.TrimSpace(firstNonEmpty(os.Getenv("DESTINATION_CHAT_ID"), os.Getenv("TELEGRAM_CHAT_ID"))),
 		SourceChannel:        getEnv("SOURCE_CHANNEL", "mon1tor_ua"),
 		SkipPatterns:         getEnvList("SKIP_PATTERNS"),
+		ExcludedRegions:      getEnvList("EXCLUDED_REGIONS"),
 		MinReconnectInterval: getEnvDuration("MIN_RECONNECT_INTERVAL", 1*time.Second),
 		MaxReconnectInterval: getEnvDuration("MAX_RECONNECT_INTERVAL", 30*time.Second),
 		QueueCapacity:        getEnvInt("QUEUE_CAPACITY", 1000),

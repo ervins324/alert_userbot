@@ -43,6 +43,7 @@ func main() {
 
 	state := alert.NewKyivAlertState(logger)
 	textFilter := filter.NewTextFilter(cfg.SkipPatterns)
+	geoFilter := filter.NewGeoFilter(cfg.ExcludedRegions)
 
 	bot := notifier.NewTelegramBot(
 		cfg.TelegramBotToken,
@@ -61,6 +62,7 @@ func main() {
 		cfg.SourceChannel,
 		state,
 		textFilter,
+		geoFilter,
 		bot,
 		cfg.QueueCapacity,
 		cfg.ForceAlert,
