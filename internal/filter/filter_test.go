@@ -42,6 +42,16 @@ func TestTextFilterShouldSkip(t *testing.T) {
 			text:     "Повітряна тривога в Києві. Переходьте в укриття.",
 			expected: false,
 		},
+		{
+			name:     "kiev_levyy_bereg signature post",
+			text:     "Увага! БпЛА біля Броварів.\n\n➡️Надіслати нам новину: @levii_bereg_kyivbot\n👉Підписатись: @kiev_levyy_bereg",
+			expected: true,
+		},
+		{
+			name:     "post containing only kiev_levyy_bereg bot handle",
+			text:     "Зв'язок з нами через @levii_bereg_kyivbot",
+			expected: true,
+		},
 	}
 
 	for _, tc := range cases {

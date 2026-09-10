@@ -36,7 +36,7 @@ func main() {
 	logger.Info("Configuration loaded",
 		slog.String("neptun_url", cfg.NeptunWSURL),
 		slog.Int("tg_api_id", cfg.TelegramAPIID),
-		slog.String("source_channel", cfg.SourceChannel),
+		slog.Any("source_channels", cfg.SourceChannels),
 		slog.String("destination_chat_id", cfg.DestinationChatID),
 		slog.String("session_file", cfg.SessionFile),
 		slog.Int("queue_capacity", cfg.QueueCapacity))
@@ -59,7 +59,7 @@ func main() {
 		cfg.TelegramPassword,
 		cfg.TelegramAuthCode,
 		cfg.SessionFile,
-		cfg.SourceChannel,
+		cfg.SourceChannels,
 		state,
 		textFilter,
 		geoFilter,

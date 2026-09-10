@@ -32,7 +32,13 @@ const (
 	ModeTestAlert
 )
 
+type channelMsgKey struct {
+	channelID int64
+	msgID     int
+}
+
 type forwardTask struct {
+	channelID    int64
 	msgID        int
 	text         string
 	photo        *tg.InputPhotoFileLocation
@@ -41,22 +47,22 @@ type forwardTask struct {
 }
 
 // UserBot is a Telegram MTProto client (logged in as a real user) that reads
-// new posts from a public channel while a Kyiv city air alert is active and
+// new posts from public channels while a Kyiv city air alert is active and
 // delivers them to a destination chat through a bot.
 type UserBot struct {
-	appID         int
-	appHash       string
-	phone         string
-	password      string
-	authCode      string
-	sessionFile   string
-	sourceChannel string
+	appID          int
+	appHash        string
+	phone          string
+	password       string
+	authCode       string
+	sessionFile    string
+	sourceChannels []string
 
 	state     *alert.KyivAlertState
 	filter    *filter.TextFilter
 	geoFilter *filter.GeoFilter
 	bot       *notifier.TelegramBot
-	logger *slog.Logger
+	logger    *slog.Logger
 
 	forceAlert    bool
 	sessionExists bool // set by checkSession, used by ensureAuth for diagnostics
@@ -64,12 +70,12 @@ type UserBot struct {
 	client *telegram.Client
 	api    *tg.Client
 
-	sourceChannelID int64
-	fromPeer        tg.InputPeerClass
-	sourceChannelObj *tg.Channel
+	sourceChannelIDs map[int64]struct{}
+	channelsByID     map[int64]*tg.Channel
+	primaryPeer      tg.InputPeerClass
 
 	queue chan forwardTask
-	seen  map[int]struct{}
+	seen  map[channelMsgKey]struct{}
 
 	forwarded atomic.Int64
 	skipped   atomic.Int64
@@ -81,7 +87,8 @@ type UserBot struct {
 // NewUserBot creates a new MTProto userbot that feeds messages to the bot.
 func NewUserBot(
 	appID int,
-	appHash, phone, password, authCode, sessionFile, sourceChannel string,
+	appHash, phone, password, authCode, sessionFile string,
+	sourceChannels []string,
 	state *alert.KyivAlertState,
 	textFilter *filter.TextFilter,
 	geoFilter *filter.GeoFilter,
@@ -94,21 +101,23 @@ func NewUserBot(
 		logger = slog.Default()
 	}
 	return &UserBot{
-		appID:         appID,
-		appHash:       appHash,
-		phone:         phone,
-		password:      password,
-		authCode:      authCode,
-		sessionFile:   sessionFile,
-		sourceChannel: sourceChannel,
-		state:         state,
-		filter:        textFilter,
-		geoFilter:     geoFilter,
-		bot:           bot,
-		logger:        logger,
-		forceAlert:    forceAlert,
-		queue:         make(chan forwardTask, queueCapacity),
-		seen:          make(map[int]struct{}),
+		appID:            appID,
+		appHash:          appHash,
+		phone:            phone,
+		password:         password,
+		authCode:         authCode,
+		sessionFile:      sessionFile,
+		sourceChannels:   sourceChannels,
+		state:            state,
+		filter:           textFilter,
+		geoFilter:        geoFilter,
+		bot:              bot,
+		logger:           logger,
+		forceAlert:       forceAlert,
+		sourceChannelIDs: make(map[int64]struct{}),
+		channelsByID:     make(map[int64]*tg.Channel),
+		queue:            make(chan forwardTask, queueCapacity),
+		seen:             make(map[channelMsgKey]struct{}),
 	}
 }
 
@@ -149,7 +158,7 @@ func (u *UserBot) Run(ctx context.Context, mode Mode) error {
 		}
 		u.logger.Info("telegram user authenticated", slog.Int64("user_id", self.ID))
 
-		if err := u.resolveSource(ctx); err != nil {
+		if err := u.resolveSources(ctx); err != nil {
 			return err
 		}
 
@@ -241,43 +250,61 @@ func (u *UserBot) askCode(ctx context.Context, sentCode *tg.AuthSentCode) (strin
 	return strings.TrimSpace(line), nil
 }
 
-func (u *UserBot) resolveSource(ctx context.Context) error {
-	// Private channel: SOURCE_CHANNEL is a numeric -100-prefixed ID.
-	if id, ok := parseChannelID(strings.TrimSpace(u.sourceChannel)); ok {
+func (u *UserBot) resolveSources(ctx context.Context) error {
+	for i, chName := range u.sourceChannels {
+		ch, err := u.resolveSourceSingle(ctx, chName)
+		if err != nil {
+			return fmt.Errorf("resolve source channel %q: %w", chName, err)
+		}
+		u.sourceChannelIDs[ch.ID] = struct{}{}
+		u.channelsByID[ch.ID] = ch
+		if i == 0 {
+			u.primaryPeer = ch.AsInputPeer()
+		}
+		u.logger.Info("source channel resolved",
+			slog.String("channel", chName),
+			slog.Int64("id", ch.ID),
+			slog.String("title", ch.Title))
+	}
+	return nil
+}
+
+func (u *UserBot) resolveSourceSingle(ctx context.Context, source string) (*tg.Channel, error) {
+	clean := strings.TrimSpace(source)
+	clean = strings.TrimPrefix(clean, "https://")
+	clean = strings.TrimPrefix(clean, "http://")
+	clean = strings.TrimPrefix(clean, "t.me/")
+	clean = strings.TrimPrefix(clean, "telegram.me/")
+	clean = strings.TrimPrefix(clean, "@")
+
+	// Private channel: SOURCE_CHANNELS is a numeric -100-prefixed ID.
+	if id, ok := parseChannelID(clean); ok {
 		ch, err := u.findChannelInDialogs(ctx, id)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		u.sourceChannelID = ch.ID
-		u.fromPeer = ch.AsInputPeer()
-		u.sourceChannelObj = ch
-		u.logger.Info("source channel resolved by ID", slog.Int64("id", ch.ID), slog.String("channel", u.sourceChannel))
-		return nil
+		return ch, nil
 	}
 
 	res, err := u.api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{
-		Username: strings.TrimPrefix(u.sourceChannel, "@"),
+		Username: clean,
 	})
 	if err != nil {
-		return fmt.Errorf("resolve source channel %q: %w", u.sourceChannel, err)
+		return nil, fmt.Errorf("resolve username %q: %w", clean, err)
 	}
 	for _, c := range res.Chats {
 		if ch, ok := c.(*tg.Channel); ok {
-			u.sourceChannelID = ch.ID
-			u.fromPeer = ch.AsInputPeer()
-			u.sourceChannelObj = ch
 			// Ensure membership so we receive channel updates.
 			if !ch.Left && !ch.Megagroup {
 				if _, err := u.api.ChannelsJoinChannel(ctx, ch.AsInput()); err != nil {
 					u.logger.Warn("could not join source channel (may already be a member)",
-						slog.String("channel", u.sourceChannel), slog.String("err", err.Error()))
+						slog.String("channel", source), slog.String("err", err.Error()))
 				}
 			}
-			u.logger.Info("source channel resolved", slog.String("channel", u.sourceChannel), slog.Int64("id", ch.ID))
-			return nil
+			return ch, nil
 		}
 	}
-	return fmt.Errorf("source channel %q is not a channel", u.sourceChannel)
+	return nil, fmt.Errorf("source %q is not a channel", source)
 }
 
 // parseChannelID parses a Telegram chat ID. Channel IDs come as -100<id>.
@@ -351,20 +378,33 @@ func (u *UserBot) handleMessage(msgClass tg.MessageClass) error {
 	}
 
 	ch, ok := m.GetPeerID().(*tg.PeerChannel)
-	if !ok || ch.ChannelID != u.sourceChannelID {
+	if !ok {
+		return nil
+	}
+	if _, found := u.sourceChannelIDs[ch.ChannelID]; !found {
 		return nil
 	}
 
 	msgID := m.GetID()
-	if _, dup := u.seen[msgID]; dup {
+	key := channelMsgKey{channelID: ch.ChannelID, msgID: msgID}
+	if _, dup := u.seen[key]; dup {
 		return nil
 	}
-	u.seen[msgID] = struct{}{}
+	u.seen[key] = struct{}{}
 
 	select {
-	case u.queue <- forwardTask{msgID: msgID, text: m.GetMessage(), photo: photoLocation(m), fwdChannelID: fwdChannelID(m), fwdPost: fwdChannelPost(m)}:
+	case u.queue <- forwardTask{
+		channelID:    ch.ChannelID,
+		msgID:        msgID,
+		text:         m.GetMessage(),
+		photo:        photoLocation(m),
+		fwdChannelID: fwdChannelID(m),
+		fwdPost:      fwdChannelPost(m),
+	}:
 	default:
-		u.logger.Error("forward queue full, message dropped", slog.Int("msg_id", msgID))
+		u.logger.Error("forward queue full, message dropped",
+			slog.Int64("channel_id", ch.ChannelID),
+			slog.Int("msg_id", msgID))
 	}
 	return nil
 }
@@ -427,7 +467,7 @@ func (u *UserBot) runDaemon(ctx context.Context) error {
 	go u.worker(ctx)
 
 	u.logger.Info("userbot ready: forwarding channel posts while Kyiv alert is active",
-		slog.String("source", u.sourceChannel),
+		slog.Any("sources", u.sourceChannels),
 		slog.Bool("force_alert", u.forceAlert))
 
 	<-ctx.Done()
@@ -560,7 +600,11 @@ func (u *UserBot) refreshPhotoLocation(ctx context.Context, task forwardTask) (*
 			return loc, nil
 		}
 	}
-	return u.photoFromChannel(ctx, u.sourceChannelObj.AsInput(), task.msgID)
+	chObj, ok := u.channelsByID[task.channelID]
+	if !ok {
+		return nil, fmt.Errorf("source channel %d not found", task.channelID)
+	}
+	return u.photoFromChannel(ctx, chObj.AsInput(), task.msgID)
 }
 
 // photoFromOriginalChannel fetches the original forwarded post from the
@@ -620,8 +664,12 @@ func (u *UserBot) testForward(ctx context.Context) error {
 	// Simulate an active alert and send the latest source-channel post.
 	u.state.SetActive(true)
 
+	if u.primaryPeer == nil {
+		return fmt.Errorf("no source channels available for test forward")
+	}
+
 	res, err := u.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-		Peer:     u.fromPeer,
+		Peer:     u.primaryPeer,
 		Limit:    5,
 		MaxID:    0,
 		MinID:    0,
@@ -651,11 +699,17 @@ func (u *UserBot) testForward(ctx context.Context) error {
 		return fmt.Errorf("unexpected history response %T", res)
 	}
 	if latest == nil {
-		return fmt.Errorf("no messages found in channel %q", u.sourceChannel)
+		return fmt.Errorf("no messages found in source channels")
+	}
+
+	var channelID int64
+	if ch, ok := latest.GetPeerID().(*tg.PeerChannel); ok {
+		channelID = ch.ChannelID
 	}
 
 	u.logger.Info("test forward: sending latest channel message (alert simulated as active)", slog.Int("msg_id", latest.GetID()))
 	u.process(ctx, forwardTask{
+		channelID:    channelID,
 		msgID:        latest.GetID(),
 		text:         latest.GetMessage(),
 		photo:        photoLocation(latest),

@@ -22,6 +22,7 @@ type Config struct {
 	TelegramAuthCode     string
 	SessionFile          string
 	DestinationChatID    string
+	SourceChannels       []string
 	SourceChannel        string
 	SkipPatterns         []string
 	ExcludedRegions      []string
@@ -36,6 +37,16 @@ type Config struct {
 func Load() (*Config, error) {
 	_ = godotenv.Load() // optional; real env vars take precedence
 
+	sourceRaw := firstNonEmpty(os.Getenv("SOURCE_CHANNELS"), os.Getenv("SOURCE_CHANNEL"))
+	if sourceRaw == "" {
+		sourceRaw = "mon1tor_ua"
+	}
+	channels := splitCommaList(sourceRaw)
+	firstChannel := ""
+	if len(channels) > 0 {
+		firstChannel = channels[0]
+	}
+
 	cfg := &Config{
 		NeptunWSURL:          getEnv("NEPTUN_WS_URL", "wss://neptun.in.ua/api/v1/stream"),
 		TelegramBotToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
@@ -46,7 +57,8 @@ func Load() (*Config, error) {
 		TelegramAuthCode:     strings.TrimSpace(os.Getenv("TG_AUTH_CODE")),
 		SessionFile:          getEnv("SESSION_FILE", "session.bin"),
 		DestinationChatID:    strings.TrimSpace(firstNonEmpty(os.Getenv("DESTINATION_CHAT_ID"), os.Getenv("TELEGRAM_CHAT_ID"))),
-		SourceChannel:        getEnv("SOURCE_CHANNEL", "mon1tor_ua"),
+		SourceChannels:       channels,
+		SourceChannel:        firstChannel,
 		SkipPatterns:         getEnvList("SKIP_PATTERNS"),
 		ExcludedRegions:      getEnvList("EXCLUDED_REGIONS"),
 		MinReconnectInterval: getEnvDuration("MIN_RECONNECT_INTERVAL", 1*time.Second),
@@ -83,8 +95,13 @@ func (c *Config) Validate() error {
 	if c.TelegramBotToken == "" {
 		return ErrMissingTelegramToken
 	}
-	if strings.TrimSpace(c.SourceChannel) == "" {
-		return fmt.Errorf("SOURCE_CHANNEL cannot be empty")
+	if len(c.SourceChannels) == 0 {
+		return fmt.Errorf("SOURCE_CHANNELS (or SOURCE_CHANNEL) cannot be empty")
+	}
+	for _, ch := range c.SourceChannels {
+		if strings.TrimSpace(ch) == "" {
+			return fmt.Errorf("SOURCE_CHANNELS contains empty channel name")
+		}
 	}
 	if c.MinReconnectInterval <= 0 {
 		return fmt.Errorf("MIN_RECONNECT_INTERVAL must be positive")
@@ -150,10 +167,15 @@ func getEnvBool(key string, fallback bool) bool {
 	return fallback
 }
 
-func getEnvList(key string) []string {	raw := strings.TrimSpace(os.Getenv(key))
+func getEnvList(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return nil
 	}
+	return splitCommaList(raw)
+}
+
+func splitCommaList(raw string) []string {
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -164,3 +186,4 @@ func getEnvList(key string) []string {	raw := strings.TrimSpace(os.Getenv(key))
 	}
 	return out
 }
+

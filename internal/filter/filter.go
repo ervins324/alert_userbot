@@ -26,6 +26,9 @@ var defaultSkipPatterns = []string{
 	"підтримаєте",
 	"пригостити піцою",
 	"грн",
+	"@levii_bereg_kyivbot",
+	"@kiev_levyy_bereg",
+	"надіслати нам новину",
 }
 
 // NewTextFilter builds a filter from the default patterns plus any custom ones.

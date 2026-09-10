@@ -22,7 +22,7 @@ Edit `.env` (copy from `.env.example` if present):
 | `TG_PHONE` | only first login | Your phone, e.g. `+380501234567` |
 | `TG_PASSWORD` | no | 2FA password, if enabled |
 | `DESTINATION_CHAT_ID` | yes | Chat the bot sends to (your user ID works) |
-| `SOURCE_CHANNEL` | no | Channel username (`mon1tor_ua`) or `-100...` ID |
+| `SOURCE_CHANNELS` (or `SOURCE_CHANNEL`) | no | Comma-separated channel usernames (`mon1tor_ua, kiev_levyy_bereg`) or `-100...` IDs |
 | `SESSION_FILE` | no | Session path (default `session.bin`) |
 | `FORCE_ALERT` | no | `true` = treat alert as always active (testing) |
 | `SKIP_PATTERNS` | no | Extra comma-separated substrings to skip |
