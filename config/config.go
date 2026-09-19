@@ -11,6 +11,60 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// parseChannelSignatures parses CHANNEL_SIGNATURES env var of the form:
+// "key1:sig text one,key2:sig text two". The key runs up to the first colon.
+func parseChannelSignatures(raw string) map[string]string {
+	out := make(map[string]string)
+	if raw == "" {
+		return out
+	}
+	// Split on comma, but the value may itself contain commas, so we split
+	// on the FIRST colon to get key, then everything after is the value.
+	// Multiple entries are newline-separated OR comma-separated at the top level:
+	// we use "|" as the entry separator to avoid ambiguity with commas in text.
+	// Format: "key1:text one|key2:text two"
+	// Fallback: also try comma if no "|" found.
+	sep := "|"
+	if !strings.Contains(raw, "|") {
+		sep = ","
+	}
+	for _, entry := range strings.Split(raw, sep) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		idx := strings.Index(entry, ":")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(entry[:idx])
+		val := strings.TrimSpace(entry[idx+1:])
+		if key != "" && val != "" {
+			out[key] = val
+		}
+	}
+	return out
+}
+
+// parseAdminUserIDs parses a comma-separated list of int64 Telegram user IDs.
+func parseAdminUserIDs(raw string) []int64 {
+	if raw == "" {
+		return nil
+	}
+	var ids []int64
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(s, 10, 64)
+		if err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // Config holds the application configuration parameters.
 type Config struct {
 	NeptunWSURL          string
@@ -31,7 +85,14 @@ type Config struct {
 	QueueCapacity        int
 	HTTPTimeout          time.Duration
 	ForceAlert           bool
+	// ChannelSignatures maps normalized channel keys to their custom signature
+	// text. Loaded from CHANNEL_SIGNATURES env var.
+	ChannelSignatures map[string]string
+	// AdminUserIDs is the optional list of Telegram user IDs allowed to manage
+	// signatures via bot commands. If empty, any chat member may do so.
+	AdminUserIDs []int64
 }
+
 
 // Load loads and validates configuration from environment variables / .env.
 func Load() (*Config, error) {
@@ -66,6 +127,8 @@ func Load() (*Config, error) {
 		QueueCapacity:        getEnvInt("QUEUE_CAPACITY", 1000),
 		HTTPTimeout:          getEnvDuration("HTTP_TIMEOUT", 10*time.Second),
 		ForceAlert:           getEnvBool("FORCE_ALERT", false),
+		ChannelSignatures:    parseChannelSignatures(os.Getenv("CHANNEL_SIGNATURES")),
+		AdminUserIDs:         parseAdminUserIDs(os.Getenv("ADMIN_USER_IDS")),
 	}
 
 	if err := cfg.Validate(); err != nil {

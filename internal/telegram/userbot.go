@@ -62,6 +62,7 @@ type UserBot struct {
 	filter    *filter.TextFilter
 	geoFilter *filter.GeoFilter
 	bot       *notifier.TelegramBot
+	sigStore  *filter.SignatureStore
 	logger    *slog.Logger
 
 	forceAlert    bool
@@ -72,7 +73,10 @@ type UserBot struct {
 
 	sourceChannelIDs map[int64]struct{}
 	channelsByID     map[int64]*tg.Channel
-	primaryPeer      tg.InputPeerClass
+	// channelKeys maps a resolved channel's numeric ID to its normalized key
+	// (lowercased username or raw numeric string) used for signature lookups.
+	channelKeys map[int64]string
+	primaryPeer tg.InputPeerClass
 
 	queue chan forwardTask
 	seen  map[channelMsgKey]struct{}
@@ -93,6 +97,7 @@ func NewUserBot(
 	textFilter *filter.TextFilter,
 	geoFilter *filter.GeoFilter,
 	bot *notifier.TelegramBot,
+	sigStore *filter.SignatureStore,
 	queueCapacity int,
 	forceAlert bool,
 	logger *slog.Logger,
@@ -112,10 +117,12 @@ func NewUserBot(
 		filter:           textFilter,
 		geoFilter:        geoFilter,
 		bot:              bot,
+		sigStore:         sigStore,
 		logger:           logger,
 		forceAlert:       forceAlert,
 		sourceChannelIDs: make(map[int64]struct{}),
 		channelsByID:     make(map[int64]*tg.Channel),
+		channelKeys:      make(map[int64]string),
 		queue:            make(chan forwardTask, queueCapacity),
 		seen:             make(map[channelMsgKey]struct{}),
 	}
@@ -258,13 +265,16 @@ func (u *UserBot) resolveSources(ctx context.Context) error {
 		}
 		u.sourceChannelIDs[ch.ID] = struct{}{}
 		u.channelsByID[ch.ID] = ch
+		// Build normalized key for signature store lookups.
+		u.channelKeys[ch.ID] = filter.NormalizeChannelKey(chName)
 		if i == 0 {
 			u.primaryPeer = ch.AsInputPeer()
 		}
 		u.logger.Info("source channel resolved",
 			slog.String("channel", chName),
 			slog.Int64("id", ch.ID),
-			slog.String("title", ch.Title))
+			slog.String("title", ch.Title),
+			slog.String("sig_key", u.channelKeys[ch.ID]))
 	}
 	return nil
 }
@@ -519,6 +529,22 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 		u.skipped.Add(1)
 		u.logger.Debug("message skipped (no active alert)", slog.Int("msg_id", task.msgID))
 		return
+	}
+
+	// Append custom per-channel signature if one is configured.
+	if u.sigStore != nil {
+		if key, ok := u.channelKeys[task.channelID]; ok {
+			if sig := u.sigStore.Get(key); sig != "" {
+				if text != "" {
+					text = text + "\n\n" + sig
+				} else {
+					text = sig
+				}
+				u.logger.Debug("custom signature appended",
+					slog.Int("msg_id", task.msgID),
+					slog.String("channel_key", key))
+			}
+		}
 	}
 
 	var err error

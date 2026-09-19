@@ -44,10 +44,13 @@ type Update struct {
 
 // BotMessage represents a message received from Telegram Bot API.
 type BotMessage struct {
-	MessageID      int         `json:"message_id"`
-	Chat           struct {
+	MessageID int    `json:"message_id"`
+	Chat      struct {
 		ID int64 `json:"id"`
 	} `json:"chat"`
+	From struct {
+		ID int64 `json:"id"`
+	} `json:"from"`
 	Text           string      `json:"text"`
 	Caption        string      `json:"caption"`
 	ReplyToMessage *BotMessage `json:"reply_to_message"`
