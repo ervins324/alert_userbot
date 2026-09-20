@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +58,7 @@ type UserBot struct {
 	password       string
 	authCode       string
 	sessionFile    string
+	channelsFile   string
 	sourceChannels []string
 
 	state     *alert.KyivAlertState
@@ -71,6 +74,7 @@ type UserBot struct {
 	client *telegram.Client
 	api    *tg.Client
 
+	mu               sync.RWMutex
 	sourceChannelIDs map[int64]struct{}
 	channelsByID     map[int64]*tg.Channel
 	// channelKeys maps a resolved channel's numeric ID to its normalized key
@@ -91,7 +95,7 @@ type UserBot struct {
 // NewUserBot creates a new MTProto userbot that feeds messages to the bot.
 func NewUserBot(
 	appID int,
-	appHash, phone, password, authCode, sessionFile string,
+	appHash, phone, password, authCode, sessionFile, channelsFile string,
 	sourceChannels []string,
 	state *alert.KyivAlertState,
 	textFilter *filter.TextFilter,
@@ -105,13 +109,14 @@ func NewUserBot(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &UserBot{
+	u := &UserBot{
 		appID:            appID,
 		appHash:          appHash,
 		phone:            phone,
 		password:         password,
 		authCode:         authCode,
 		sessionFile:      sessionFile,
+		channelsFile:     channelsFile,
 		sourceChannels:   sourceChannels,
 		state:            state,
 		filter:           textFilter,
@@ -126,6 +131,44 @@ func NewUserBot(
 		queue:            make(chan forwardTask, queueCapacity),
 		seen:             make(map[channelMsgKey]struct{}),
 	}
+	u.initChannels()
+	return u
+}
+
+func (u *UserBot) initChannels() {
+	if u.channelsFile == "" {
+		return
+	}
+	data, err := os.ReadFile(u.channelsFile)
+	if err == nil {
+		var loaded []string
+		if err := json.Unmarshal(data, &loaded); err == nil && len(loaded) > 0 {
+			u.sourceChannels = loaded
+			u.logger.Info("loaded monitored channels from file",
+				slog.String("file", u.channelsFile),
+				slog.Int("count", len(loaded)))
+			return
+		}
+	}
+	// If file doesn't exist yet, save current sourceChannels to seed the file
+	if len(u.sourceChannels) > 0 {
+		_ = u.saveChannelsLocked()
+	}
+}
+
+func (u *UserBot) saveChannelsLocked() error {
+	if u.channelsFile == "" {
+		return nil
+	}
+	dir := filepath.Dir(u.channelsFile)
+	if dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0755)
+	}
+	data, err := json.MarshalIndent(u.sourceChannels, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(u.channelsFile, data, 0644)
 }
 
 // ChannelInfo describes a resolved or configured source channel.
@@ -138,6 +181,9 @@ type ChannelInfo struct {
 
 // MonitoredChannels returns a list of source channels currently monitored by the userbot.
 func (u *UserBot) MonitoredChannels() []ChannelInfo {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
 	var out []ChannelInfo
 	for id, ch := range u.channelsByID {
 		cfgName := u.channelKeys[id]
@@ -156,6 +202,152 @@ func (u *UserBot) MonitoredChannels() []ChannelInfo {
 		}
 	}
 	return out
+}
+
+// AddChannel resolves, joins (if public), and adds a new channel to active monitoring.
+// It persists the updated channel list to disk.
+func (u *UserBot) AddChannel(ctx context.Context, raw string) (*ChannelInfo, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("назва або ID каналу не може бути порожнім")
+	}
+
+	if u.api == nil {
+		return nil, fmt.Errorf("userbot ще підключається до Telegram, зачекайте кілька секунд")
+	}
+
+	// 1. Resolve channel via MTProto client
+	ch, err := u.resolveSourceSingle(ctx, raw)
+	if err != nil {
+		return nil, fmt.Errorf("не вдалося знайти або приєднатися до каналу %q: %w", raw, err)
+	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	// 2. Add to active monitoring maps
+	u.sourceChannelIDs[ch.ID] = struct{}{}
+	u.channelsByID[ch.ID] = ch
+	sigKey := filter.NormalizeChannelKey(raw)
+	if sigKey == "" && ch.Username != "" {
+		sigKey = filter.NormalizeChannelKey(ch.Username)
+	}
+	u.channelKeys[ch.ID] = sigKey
+
+	// 3. Add to sourceChannels list if not already present
+	alreadyPresent := false
+	for _, sc := range u.sourceChannels {
+		if strings.EqualFold(strings.TrimSpace(sc), raw) {
+			alreadyPresent = true
+			break
+		}
+	}
+	if !alreadyPresent {
+		u.sourceChannels = append(u.sourceChannels, raw)
+	}
+
+	// 4. Save to disk
+	_ = u.saveChannelsLocked()
+
+	info := &ChannelInfo{
+		ID:         ch.ID,
+		Username:   ch.Username,
+		Title:      ch.Title,
+		ConfigName: sigKey,
+	}
+
+	u.logger.Info("channel added to monitoring",
+		slog.String("raw", raw),
+		slog.Int64("id", ch.ID),
+		slog.String("title", ch.Title),
+		slog.String("username", ch.Username))
+
+	return info, nil
+}
+
+// RemoveChannel removes a channel from active monitoring and updates disk storage.
+func (u *UserBot) RemoveChannel(raw string) (*ChannelInfo, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("назва або ID каналу не може бути порожнім")
+	}
+
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	var matchedID int64
+	var matchedCh *tg.Channel
+
+	// Find channel by checking ID, username, title, or config name
+	for id, ch := range u.channelsByID {
+		cfgName := u.channelKeys[id]
+		chInfo := &ChannelInfo{
+			ID:         id,
+			Username:   ch.Username,
+			Title:      ch.Title,
+			ConfigName: cfgName,
+		}
+		if channelMatches(raw, chInfo) {
+			matchedID = id
+			matchedCh = ch
+			break
+		}
+	}
+
+	if matchedID == 0 {
+		return nil, fmt.Errorf("канал %q не знайдено серед активних каналів моніторингу", raw)
+	}
+
+	delete(u.sourceChannelIDs, matchedID)
+	delete(u.channelsByID, matchedID)
+	delete(u.channelKeys, matchedID)
+
+	// Remove from sourceChannels list
+	var newSources []string
+	for _, sc := range u.sourceChannels {
+		if !channelMatches(sc, &ChannelInfo{ID: matchedID, Username: matchedCh.Username, Title: matchedCh.Title, ConfigName: raw}) {
+			newSources = append(newSources, sc)
+		}
+	}
+	u.sourceChannels = newSources
+
+	_ = u.saveChannelsLocked()
+
+	info := &ChannelInfo{
+		ID:         matchedID,
+		Username:   matchedCh.Username,
+		Title:      matchedCh.Title,
+		ConfigName: raw,
+	}
+
+	u.logger.Info("channel removed from monitoring",
+		slog.String("raw", raw),
+		slog.Int64("id", matchedID),
+		slog.String("title", matchedCh.Title))
+
+	return info, nil
+}
+
+func channelMatches(query string, ch *ChannelInfo) bool {
+	norm := filter.NormalizeChannelKey(query)
+	if norm == "" {
+		return false
+	}
+	if norm == filter.NormalizeChannelKey(ch.Username) && ch.Username != "" {
+		return true
+	}
+	if norm == filter.NormalizeChannelKey(ch.ConfigName) && ch.ConfigName != "" {
+		return true
+	}
+	if ch.ID != 0 {
+		if norm == fmt.Sprintf("-100%d", ch.ID) || norm == fmt.Sprintf("%d", ch.ID) {
+			return true
+		}
+	}
+	if ch.Title != "" && strings.EqualFold(strings.TrimSpace(query), strings.TrimSpace(ch.Title)) {
+		return true
+	}
+	return false
 }
 
 // Stats returns counters for forwarded, skipped and filtered messages.
@@ -288,23 +480,38 @@ func (u *UserBot) askCode(ctx context.Context, sentCode *tg.AuthSentCode) (strin
 }
 
 func (u *UserBot) resolveSources(ctx context.Context) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	var resolvedCount int
 	for i, chName := range u.sourceChannels {
 		ch, err := u.resolveSourceSingle(ctx, chName)
 		if err != nil {
-			return fmt.Errorf("resolve source channel %q: %w", chName, err)
+			u.logger.Error("failed to resolve source channel",
+				slog.String("channel", chName),
+				slog.String("err", err.Error()))
+			continue
 		}
 		u.sourceChannelIDs[ch.ID] = struct{}{}
 		u.channelsByID[ch.ID] = ch
-		// Build normalized key for signature store lookups.
-		u.channelKeys[ch.ID] = filter.NormalizeChannelKey(chName)
-		if i == 0 {
+		sigKey := filter.NormalizeChannelKey(chName)
+		if sigKey == "" && ch.Username != "" {
+			sigKey = filter.NormalizeChannelKey(ch.Username)
+		}
+		u.channelKeys[ch.ID] = sigKey
+		if u.primaryPeer == nil || i == 0 {
 			u.primaryPeer = ch.AsInputPeer()
 		}
+		resolvedCount++
 		u.logger.Info("source channel resolved",
 			slog.String("channel", chName),
 			slog.Int64("id", ch.ID),
 			slog.String("title", ch.Title),
-			slog.String("sig_key", u.channelKeys[ch.ID]))
+			slog.String("sig_key", sigKey))
+	}
+
+	if resolvedCount == 0 && len(u.sourceChannels) > 0 {
+		return fmt.Errorf("none of the configured source channels could be resolved")
 	}
 	return nil
 }
@@ -421,7 +628,11 @@ func (u *UserBot) handleMessage(msgClass tg.MessageClass) error {
 	if !ok {
 		return nil
 	}
-	if _, found := u.sourceChannelIDs[ch.ChannelID]; !found {
+
+	u.mu.RLock()
+	_, found := u.sourceChannelIDs[ch.ChannelID]
+	u.mu.RUnlock()
+	if !found {
 		return nil
 	}
 
@@ -563,12 +774,14 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 
 	// Append custom signature if configured (channel-specific or global default).
 	if u.sigStore != nil {
-		var username, title string
+		u.mu.RLock()
+		var username, title, configName string
 		if chObj, ok := u.channelsByID[task.channelID]; ok && chObj != nil {
 			username = chObj.Username
 			title = chObj.Title
 		}
-		configName := u.channelKeys[task.channelID]
+		configName = u.channelKeys[task.channelID]
+		u.mu.RUnlock()
 
 		sig, matchedKey := u.sigStore.GetForChannel(
 			configName,
@@ -578,16 +791,24 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 			title,
 		)
 		if sig != "" {
-			if text != "" {
-				text = text + "\n\n" + sig
+			trimmedText := strings.TrimSpace(text)
+			trimmedSig := strings.TrimSpace(sig)
+			// Deduplication check: do not append if text already ends with this signature!
+			if !strings.HasSuffix(trimmedText, trimmedSig) {
+				if text != "" {
+					text = text + "\n\n" + sig
+				} else {
+					text = sig
+				}
+				u.logger.Info("custom signature appended to message",
+					slog.Int("msg_id", task.msgID),
+					slog.Int64("channel_id", task.channelID),
+					slog.String("matched_key", matchedKey),
+					slog.String("sig", sig))
 			} else {
-				text = sig
+				u.logger.Debug("custom signature already present at end of message, skipping",
+					slog.Int("msg_id", task.msgID))
 			}
-			u.logger.Info("custom signature appended to message",
-				slog.Int("msg_id", task.msgID),
-				slog.Int64("channel_id", task.channelID),
-				slog.String("matched_key", matchedKey),
-				slog.String("sig", sig))
 		}
 	}
 

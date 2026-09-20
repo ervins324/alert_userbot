@@ -70,7 +70,8 @@ func (b *TelegramBot) SendText(text string) error {
 	return b.post("/sendMessage", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
 }
 
-// SendTextReply sends a text reply to a specific message in a chat.
+// SendTextReply sends an HTML-formatted text reply to a specific message in a chat.
+// If Telegram rejects the message due to invalid HTML entities, it falls back to plain text.
 func (b *TelegramBot) SendTextReply(chatID int64, text string, replyToMsgID int) error {
 	form := url.Values{}
 	targetChat := b.chatID
@@ -79,11 +80,19 @@ func (b *TelegramBot) SendTextReply(chatID int64, text string, replyToMsgID int)
 	}
 	form.Set("chat_id", targetChat)
 	form.Set("text", text)
+	form.Set("parse_mode", "HTML")
 	if replyToMsgID > 0 {
 		form.Set("reply_to_message_id", fmt.Sprintf("%d", replyToMsgID))
 	}
 	form.Set("disable_web_page_preview", "true")
-	return b.post("/sendMessage", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
+
+	err := b.post("/sendMessage", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
+	if err != nil && strings.Contains(err.Error(), "can't parse entities") {
+		// Fallback to plain text if HTML tags were malformed
+		form.Del("parse_mode")
+		return b.post("/sendMessage", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
+	}
+	return err
 }
 
 // SendPhoto uploads a photo with an optional caption.

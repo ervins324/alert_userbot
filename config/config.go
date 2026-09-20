@@ -89,6 +89,9 @@ type Config struct {
 	// SignaturesFile is the path to the JSON file where runtime signatures are persisted.
 	// Defaults to signatures.json next to SessionFile.
 	SignaturesFile string
+	// ChannelsFile is the path to the JSON file where runtime monitored channels are persisted.
+	// Defaults to channels.json next to SessionFile.
+	ChannelsFile string
 	// ChannelSignatures maps normalized channel keys to their custom signature
 	// text. Loaded from CHANNEL_SIGNATURES env var.
 	ChannelSignatures map[string]string
@@ -103,6 +106,14 @@ func defaultSignaturesFile(sessionFile string) string {
 		return "signatures.json"
 	}
 	return filepath.Join(dir, "signatures.json")
+}
+
+func defaultChannelsFile(sessionFile string) string {
+	dir := filepath.Dir(sessionFile)
+	if dir == "" || dir == "." {
+		return "channels.json"
+	}
+	return filepath.Join(dir, "channels.json")
 }
 
 // Load loads and validates configuration from environment variables / .env.
@@ -121,6 +132,7 @@ func Load() (*Config, error) {
 
 	sessionFile := getEnv("SESSION_FILE", "session.bin")
 	signaturesFile := getEnv("SIGNATURES_FILE", defaultSignaturesFile(sessionFile))
+	channelsFile := getEnv("CHANNELS_FILE", defaultChannelsFile(sessionFile))
 
 	cfg := &Config{
 		NeptunWSURL:          getEnv("NEPTUN_WS_URL", "wss://neptun.in.ua/api/v1/stream"),
@@ -132,6 +144,7 @@ func Load() (*Config, error) {
 		TelegramAuthCode:     strings.TrimSpace(os.Getenv("TG_AUTH_CODE")),
 		SessionFile:          sessionFile,
 		SignaturesFile:       signaturesFile,
+		ChannelsFile:         channelsFile,
 		DestinationChatID:    strings.TrimSpace(firstNonEmpty(os.Getenv("DESTINATION_CHAT_ID"), os.Getenv("TELEGRAM_CHAT_ID"))),
 		SourceChannels:       channels,
 		SourceChannel:        firstChannel,

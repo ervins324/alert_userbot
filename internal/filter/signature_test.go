@@ -16,6 +16,32 @@ func TestRemoveSignatureFromPost(t *testing.T) {
 	}
 }
 
+func TestRemoveSignatureUserKyivMonitorCase(t *testing.T) {
+	post := "З Вишневого на Петропавлівську Борщагівку.\n\n@kyiv_monitor1"
+
+	cleaned, removed := RemoveSignature(post)
+	if !removed {
+		t.Fatal("expected signature @kyiv_monitor1 to be removed")
+	}
+	want := "З Вишневого на Петропавлівську Борщагівку."
+	if cleaned != want {
+		t.Errorf("expected %q, got %q", want, cleaned)
+	}
+}
+
+func TestRemoveSignatureTrailingLink(t *testing.T) {
+	post := "Збито ворожий дрон над областю.\n\nt.me/kyiv_monitor1"
+
+	cleaned, removed := RemoveSignature(post)
+	if !removed {
+		t.Fatal("expected t.me link to be removed")
+	}
+	want := "Збито ворожий дрон над областю."
+	if cleaned != want {
+		t.Errorf("expected %q, got %q", want, cleaned)
+	}
+}
+
 func TestRemoveSignatureWithoutHandle(t *testing.T) {
 	post := "❗️❗❗Загроза пуску балістичних ракет \"Іскандер-М\"/\"С-300\" з Курської області.\nПідписатись 👉 🚀ППО | РАДАР"
 
@@ -37,6 +63,14 @@ func TestRemoveSignatureOnlyFooter(t *testing.T) {
 	if cleaned != "" {
 		t.Errorf("expected empty text, got %q", cleaned)
 	}
+
+	cleaned2, removed2 := RemoveSignature("@kyiv_monitor1")
+	if !removed2 {
+		t.Fatal("expected handle to be removed")
+	}
+	if cleaned2 != "" {
+		t.Errorf("expected empty text, got %q", cleaned2)
+	}
 }
 
 func TestRemoveSignaturePlainMessage(t *testing.T) {
@@ -50,11 +84,25 @@ func TestRemoveSignaturePlainMessage(t *testing.T) {
 	}
 }
 
+func TestRemoveSignatureHandleInsideSentence(t *testing.T) {
+	text := "За інформацією @kyiv_monitor1 в центрі міста працює ППО."
+	cleaned, removed := RemoveSignature(text)
+	if removed {
+		t.Error("inline handle should not be removed as signature")
+	}
+	if cleaned != text {
+		t.Errorf("text should be unchanged, got %q", cleaned)
+	}
+}
+
 func TestHasSignature(t *testing.T) {
 	if !HasSignature("Пост з підписом\n" + channelSignature) {
 		t.Error("expected signature detected")
 	}
-	if HasSignature("Пост без підпису") {
+	if !HasSignature("З Вишневого на Петропавлівську Борщагівку.\n\n@kyiv_monitor1") {
+		t.Error("expected @kyiv_monitor1 detected")
+	}
+	if HasSignature("Просто новина без підпису") {
 		t.Error("expected no signature")
 	}
 }

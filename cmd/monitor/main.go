@@ -60,6 +60,7 @@ func main() {
 		cfg.TelegramPassword,
 		cfg.TelegramAuthCode,
 		cfg.SessionFile,
+		cfg.ChannelsFile,
 		cfg.SourceChannels,
 		state,
 		textFilter,
@@ -118,7 +119,7 @@ func main() {
 		}
 	}
 
-	cmdHandler := command.NewHandler(bot, sigStore, ub.MonitoredChannels, cfg.AdminUserIDs, logger)
+	cmdHandler := command.NewHandler(bot, sigStore, ub, cfg.AdminUserIDs, logger)
 
 	runErr := make(chan error, 1)
 	go func() {
