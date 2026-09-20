@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -85,6 +86,9 @@ type Config struct {
 	QueueCapacity        int
 	HTTPTimeout          time.Duration
 	ForceAlert           bool
+	// SignaturesFile is the path to the JSON file where runtime signatures are persisted.
+	// Defaults to signatures.json next to SessionFile.
+	SignaturesFile string
 	// ChannelSignatures maps normalized channel keys to their custom signature
 	// text. Loaded from CHANNEL_SIGNATURES env var.
 	ChannelSignatures map[string]string
@@ -93,6 +97,13 @@ type Config struct {
 	AdminUserIDs []int64
 }
 
+func defaultSignaturesFile(sessionFile string) string {
+	dir := filepath.Dir(sessionFile)
+	if dir == "" || dir == "." {
+		return "signatures.json"
+	}
+	return filepath.Join(dir, "signatures.json")
+}
 
 // Load loads and validates configuration from environment variables / .env.
 func Load() (*Config, error) {
@@ -108,6 +119,9 @@ func Load() (*Config, error) {
 		firstChannel = channels[0]
 	}
 
+	sessionFile := getEnv("SESSION_FILE", "session.bin")
+	signaturesFile := getEnv("SIGNATURES_FILE", defaultSignaturesFile(sessionFile))
+
 	cfg := &Config{
 		NeptunWSURL:          getEnv("NEPTUN_WS_URL", "wss://neptun.in.ua/api/v1/stream"),
 		TelegramBotToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
@@ -116,7 +130,8 @@ func Load() (*Config, error) {
 		TelegramPhone:        strings.TrimSpace(os.Getenv("TG_PHONE")),
 		TelegramPassword:     os.Getenv("TG_PASSWORD"),
 		TelegramAuthCode:     strings.TrimSpace(os.Getenv("TG_AUTH_CODE")),
-		SessionFile:          getEnv("SESSION_FILE", "session.bin"),
+		SessionFile:          sessionFile,
+		SignaturesFile:       signaturesFile,
 		DestinationChatID:    strings.TrimSpace(firstNonEmpty(os.Getenv("DESTINATION_CHAT_ID"), os.Getenv("TELEGRAM_CHAT_ID"))),
 		SourceChannels:       channels,
 		SourceChannel:        firstChannel,

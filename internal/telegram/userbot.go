@@ -128,6 +128,36 @@ func NewUserBot(
 	}
 }
 
+// ChannelInfo describes a resolved or configured source channel.
+type ChannelInfo struct {
+	ID         int64
+	Username   string
+	Title      string
+	ConfigName string
+}
+
+// MonitoredChannels returns a list of source channels currently monitored by the userbot.
+func (u *UserBot) MonitoredChannels() []ChannelInfo {
+	var out []ChannelInfo
+	for id, ch := range u.channelsByID {
+		cfgName := u.channelKeys[id]
+		out = append(out, ChannelInfo{
+			ID:         id,
+			Username:   ch.Username,
+			Title:      ch.Title,
+			ConfigName: cfgName,
+		})
+	}
+	if len(out) == 0 {
+		for _, s := range u.sourceChannels {
+			out = append(out, ChannelInfo{
+				ConfigName: s,
+			})
+		}
+	}
+	return out
+}
+
 // Stats returns counters for forwarded, skipped and filtered messages.
 func (u *UserBot) Stats() (forwarded, skipped, filtered int64) {
 	return u.forwarded.Load(), u.skipped.Load(), u.filtered.Load()
@@ -531,19 +561,33 @@ func (u *UserBot) process(ctx context.Context, task forwardTask) {
 		return
 	}
 
-	// Append custom per-channel signature if one is configured.
+	// Append custom signature if configured (channel-specific or global default).
 	if u.sigStore != nil {
-		if key, ok := u.channelKeys[task.channelID]; ok {
-			if sig := u.sigStore.Get(key); sig != "" {
-				if text != "" {
-					text = text + "\n\n" + sig
-				} else {
-					text = sig
-				}
-				u.logger.Debug("custom signature appended",
-					slog.Int("msg_id", task.msgID),
-					slog.String("channel_key", key))
+		var username, title string
+		if chObj, ok := u.channelsByID[task.channelID]; ok && chObj != nil {
+			username = chObj.Username
+			title = chObj.Title
+		}
+		configName := u.channelKeys[task.channelID]
+
+		sig, matchedKey := u.sigStore.GetForChannel(
+			configName,
+			fmt.Sprintf("-100%d", task.channelID),
+			fmt.Sprintf("%d", task.channelID),
+			username,
+			title,
+		)
+		if sig != "" {
+			if text != "" {
+				text = text + "\n\n" + sig
+			} else {
+				text = sig
 			}
+			u.logger.Info("custom signature appended to message",
+				slog.Int("msg_id", task.msgID),
+				slog.Int64("channel_id", task.channelID),
+				slog.String("matched_key", matchedKey),
+				slog.String("sig", sig))
 		}
 	}
 

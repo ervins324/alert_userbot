@@ -44,7 +44,7 @@ func main() {
 	state := alert.NewKyivAlertState(logger)
 	textFilter := filter.NewTextFilter(cfg.SkipPatterns)
 	geoFilter := filter.NewGeoFilter(cfg.ExcludedRegions)
-	sigStore := filter.NewSignatureStore(cfg.ChannelSignatures)
+	sigStore := filter.NewSignatureStore(cfg.SignaturesFile, cfg.ChannelSignatures, logger)
 
 	bot := notifier.NewTelegramBot(
 		cfg.TelegramBotToken,
@@ -118,7 +118,7 @@ func main() {
 		}
 	}
 
-	cmdHandler := command.NewHandler(bot, sigStore, cfg.AdminUserIDs, logger)
+	cmdHandler := command.NewHandler(bot, sigStore, ub.MonitoredChannels, cfg.AdminUserIDs, logger)
 
 	runErr := make(chan error, 1)
 	go func() {

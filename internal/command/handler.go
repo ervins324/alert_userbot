@@ -11,27 +11,36 @@ import (
 	"alert-userbot/internal/geomap"
 	"alert-userbot/internal/geoparse"
 	"alert-userbot/internal/notifier"
+	"alert-userbot/internal/telegram"
 )
 
 // Handler processes interactive bot commands such as /map, /setsig, /clearsig,
 // and /listsig.
 type Handler struct {
-	bot          *notifier.TelegramBot
-	sigStore     *filter.SignatureStore
-	adminUserIDs []int64 // if empty, any user may manage signatures
-	logger       *slog.Logger
+	bot             *notifier.TelegramBot
+	sigStore        *filter.SignatureStore
+	channelProvider func() []telegram.ChannelInfo
+	adminUserIDs    []int64 // if empty, any user in chat may manage signatures
+	logger          *slog.Logger
 }
 
 // NewHandler creates a new bot command handler.
-func NewHandler(bot *notifier.TelegramBot, sigStore *filter.SignatureStore, adminUserIDs []int64, logger *slog.Logger) *Handler {
+func NewHandler(
+	bot *notifier.TelegramBot,
+	sigStore *filter.SignatureStore,
+	channelProvider func() []telegram.ChannelInfo,
+	adminUserIDs []int64,
+	logger *slog.Logger,
+) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Handler{
-		bot:          bot,
-		sigStore:     sigStore,
-		adminUserIDs: adminUserIDs,
-		logger:       logger,
+		bot:             bot,
+		sigStore:        sigStore,
+		channelProvider: channelProvider,
+		adminUserIDs:    adminUserIDs,
+		logger:          logger,
 	}
 }
 
@@ -146,39 +155,122 @@ func (h *Handler) handleSetSig(msg *notifier.BotMessage, args string) {
 		return
 	}
 
-	// args is everything after "/setsig": "<channel> [text]"
-	channelKey, sigText, hasText := parseChannelAndRest(args)
-	if channelKey == "" {
-		_ = h.bot.SendTextReply(msg.Chat.ID,
-			"ℹ️ Використання:\n/setsig <канал> <текст підпису>  — встановити підпис\n/setsig <канал>                  — показати поточний підпис",
-			msg.MessageID)
-		return
-	}
+	args = strings.TrimSpace(args)
+	if args == "" {
+		// Show usage and available channels
+		var sb strings.Builder
+		sb.WriteString("ℹ️ <b>Використання команди /setsig:</b>\n\n")
+		sb.WriteString("• <code>/setsig &lt;текст&gt;</code> — встановити загальний підпис для всіх каналів\n")
+		sb.WriteString("• <code>/setsig default &lt;текст&gt;</code> — встановити загальний підпис\n")
+		sb.WriteString("• <code>/setsig &lt;канал&gt; &lt;текст&gt;</code> — встановити підпис для конкретного каналу\n")
+		sb.WriteString("• <code>/clearsig [канал]</code> — видалити підпис\n")
+		sb.WriteString("• <code>/listsig</code> — переглянути активні підписи\n")
 
-	key := filter.NormalizeChannelKey(channelKey)
-
-	if !hasText {
-		// Show current signature
-		current := h.sigStore.Get(key)
-		if current == "" {
-			_ = h.bot.SendTextReply(msg.Chat.ID,
-				fmt.Sprintf("ℹ️ Підпис для каналу %q не встановлено.", key),
-				msg.MessageID)
-		} else {
-			_ = h.bot.SendTextReply(msg.Chat.ID,
-				fmt.Sprintf("📝 Поточний підпис для %q:\n%s", key, current),
-				msg.MessageID)
+		channels := h.getChannels()
+		if len(channels) > 0 {
+			sb.WriteString("\n📢 <b>Канали моніторингу:</b>\n")
+			for _, ch := range channels {
+				name := ch.Title
+				if name == "" {
+					name = ch.ConfigName
+				}
+				idStr := ""
+				if ch.ID != 0 {
+					idStr = fmt.Sprintf(" (ID: -100%d)", ch.ID)
+				}
+				unameStr := ""
+				if ch.Username != "" {
+					unameStr = fmt.Sprintf(" @%s", ch.Username)
+				}
+				sb.WriteString(fmt.Sprintf("• %s%s%s\n", name, unameStr, idStr))
+			}
 		}
+
+		_ = h.bot.SendTextReply(msg.Chat.ID, sb.String(), msg.MessageID)
 		return
 	}
 
-	h.sigStore.Set(key, sigText)
-	h.logger.Info("channel signature set",
-		slog.String("channel_key", key),
-		slog.String("sig", sigText),
-		slog.Int64("by_user", msg.From.ID))
+	firstWord, rest := splitFirstWord(args)
+	firstLower := strings.ToLower(firstWord)
+
+	// 1. Explicit global default keyword
+	if firstLower == "default" || firstLower == "all" || firstLower == "*" || firstLower == "загальний" {
+		if rest == "" {
+			cur := h.sigStore.Get("default")
+			if cur == "" {
+				_ = h.bot.SendTextReply(msg.Chat.ID, "ℹ️ Загальний підпис наразі не встановлено.", msg.MessageID)
+			} else {
+				_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("📝 Поточний загальний підпис:\n%s", cur), msg.MessageID)
+			}
+			return
+		}
+		_ = h.sigStore.Set("default", rest)
+		h.logger.Info("default signature set", slog.String("sig", rest), slog.Int64("by_user", msg.From.ID))
+		_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("✅ Встановлено загальний підпис для всіх повідомлень:\n%s", rest), msg.MessageID)
+		return
+	}
+
+	// 2. Check if firstWord matches one of our monitored channels
+	channels := h.getChannels()
+	var matchedChannel *telegram.ChannelInfo
+	for i := range channels {
+		ch := &channels[i]
+		if channelMatches(firstWord, ch) {
+			matchedChannel = ch
+			break
+		}
+	}
+
+	if matchedChannel != nil {
+		targetKey := channelKey(matchedChannel)
+		if rest == "" {
+			cur := h.sigStore.Get(targetKey)
+			if cur == "" {
+				// Also check fallback
+				cur = h.sigStore.Get("default")
+				if cur != "" {
+					_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("ℹ️ Спеціальний підпис не встановлено. Використовується загальний:\n%s", cur), msg.MessageID)
+					return
+				}
+				_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("ℹ️ Підпис для каналу %q не встановлено.", targetKey), msg.MessageID)
+			} else {
+				_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("📝 Поточний підпис для %q:\n%s", targetKey, cur), msg.MessageID)
+			}
+			return
+		}
+
+		_ = h.sigStore.Set(targetKey, rest)
+		h.logger.Info("channel signature set",
+			slog.String("channel_key", targetKey),
+			slog.String("sig", rest),
+			slog.Int64("by_user", msg.From.ID))
+		_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("✅ Підпис для каналу %q встановлено:\n%s", targetKey, rest), msg.MessageID)
+		return
+	}
+
+	// 3. Check if firstWord looks like an explicit channel username or numeric ID
+	if looksLikeChannelIdentifier(firstWord) && rest != "" {
+		targetKey := filter.NormalizeChannelKey(firstWord)
+		_ = h.sigStore.Set(targetKey, rest)
+		h.logger.Info("custom signature set for identifier",
+			slog.String("key", targetKey),
+			slog.String("sig", rest),
+			slog.Int64("by_user", msg.From.ID))
+		_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("✅ Підпис для %q встановлено:\n%s", targetKey, rest), msg.MessageID)
+		return
+	}
+
+	// 4. Otherwise, the user entered text directly without specifying a channel name!
+	// Treat the entire input as the default signature.
+	_ = h.sigStore.Set("default", args)
+	// If only 1 channel exists, also set it for that channel directly to be 100% sure
+	if len(channels) == 1 {
+		_ = h.sigStore.Set(channelKey(&channels[0]), args)
+	}
+
+	h.logger.Info("signature set as default", slog.String("sig", args), slog.Int64("by_user", msg.From.ID))
 	_ = h.bot.SendTextReply(msg.Chat.ID,
-		fmt.Sprintf("✅ Підпис для каналу %q встановлено:\n%s", key, sigText),
+		fmt.Sprintf("✅ Встановлено загальний підпис для всіх повідомлень:\n%s\n\n(💾 Збережено на диску)", args),
 		msg.MessageID)
 }
 
@@ -190,22 +282,43 @@ func (h *Handler) handleClearSig(msg *notifier.BotMessage, args string) {
 		return
 	}
 
-	channelKey := strings.TrimSpace(args)
-	if channelKey == "" {
-		_ = h.bot.SendTextReply(msg.Chat.ID,
-			"ℹ️ Використання: /clearsig <канал>",
-			msg.MessageID)
+	target := strings.TrimSpace(args)
+	if target == "" || strings.ToLower(target) == "default" {
+		_ = h.sigStore.Clear("default")
+		// If only 1 channel, also clear it
+		channels := h.getChannels()
+		if len(channels) == 1 {
+			_ = h.sigStore.Clear(channelKey(&channels[0]))
+		}
+		_ = h.bot.SendTextReply(msg.Chat.ID, "🗑 Загальний підпис видалено.", msg.MessageID)
 		return
 	}
 
-	key := filter.NormalizeChannelKey(channelKey)
-	h.sigStore.Clear(key)
-	h.logger.Info("channel signature cleared",
-		slog.String("channel_key", key),
-		slog.Int64("by_user", msg.From.ID))
-	_ = h.bot.SendTextReply(msg.Chat.ID,
-		fmt.Sprintf("🗑 Підпис для каналу %q видалено.", key),
-		msg.MessageID)
+	if strings.ToLower(target) == "all" {
+		all := h.sigStore.List()
+		for k := range all {
+			_ = h.sigStore.Clear(k)
+		}
+		_ = h.bot.SendTextReply(msg.Chat.ID, "🗑 Усі підписи видалено.", msg.MessageID)
+		return
+	}
+
+	// Match channel or direct key
+	channels := h.getChannels()
+	var keyToClear string
+	for _, ch := range channels {
+		if channelMatches(target, &ch) {
+			keyToClear = channelKey(&ch)
+			break
+		}
+	}
+	if keyToClear == "" {
+		keyToClear = filter.NormalizeChannelKey(target)
+	}
+
+	_ = h.sigStore.Clear(keyToClear)
+	h.logger.Info("channel signature cleared", slog.String("channel_key", keyToClear), slog.Int64("by_user", msg.From.ID))
+	_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("🗑 Підпис для %q видалено.", keyToClear), msg.MessageID)
 }
 
 // ── /listsig ──────────────────────────────────────────────────────────────────
@@ -217,23 +330,93 @@ func (h *Handler) handleListSig(msg *notifier.BotMessage) {
 	}
 
 	sigs := h.sigStore.List()
-	if len(sigs) == 0 {
-		_ = h.bot.SendTextReply(msg.Chat.ID, "ℹ️ Підписи не встановлені.", msg.MessageID)
-		return
-	}
+	channels := h.getChannels()
 
 	var sb strings.Builder
-	sb.WriteString("📋 Поточні підписи каналів:\n")
-	for k, v := range sigs {
-		sb.WriteString(fmt.Sprintf("\n• %s:\n  %s\n", k, v))
+	sb.WriteString("📋 <b>Налаштування підписів каналів:</b>\n\n")
+
+	// 1. Default signature
+	defSig := h.sigStore.Get("default")
+	if defSig != "" {
+		sb.WriteString(fmt.Sprintf("⭐ <b>Загальний підпис (за замовчуванням):</b>\n%s\n\n", defSig))
+	} else {
+		sb.WriteString("⭐ <b>Загальний підпис:</b> (не встановлено)\n\n")
 	}
+
+	// 2. Monitored channels
+	if len(channels) > 0 {
+		sb.WriteString("📢 <b>Канали моніторингу:</b>\n")
+		for _, ch := range channels {
+			name := ch.Title
+			if name == "" {
+				name = ch.ConfigName
+			}
+			idStr := ""
+			if ch.ID != 0 {
+				idStr = fmt.Sprintf(" [-100%d]", ch.ID)
+			}
+			unameStr := ""
+			if ch.Username != "" {
+				unameStr = fmt.Sprintf(" (@%s)", ch.Username)
+			}
+
+			sig, matchedKey := h.sigStore.GetForChannel(
+				ch.ConfigName,
+				fmt.Sprintf("-100%d", ch.ID),
+				fmt.Sprintf("%d", ch.ID),
+				ch.Username,
+				ch.Title,
+			)
+
+			if sig != "" {
+				if matchedKey == "default" {
+					sb.WriteString(fmt.Sprintf("• <b>%s</b>%s%s:\n  ↳ <i>[Використовується загальний підпис]</i>\n", name, unameStr, idStr))
+				} else {
+					sb.WriteString(fmt.Sprintf("• <b>%s</b>%s%s:\n  ↳ <i>%s</i>\n", name, unameStr, idStr, sig))
+				}
+			} else {
+				sb.WriteString(fmt.Sprintf("• <b>%s</b>%s%s:\n  ↳ (немає підпису)\n", name, unameStr, idStr))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// 3. Any additional explicit keys in store
+	extraCount := 0
+	for k, v := range sigs {
+		if k == "default" || k == "all" || k == "*" {
+			continue
+		}
+		// check if it's already shown under channels
+		isChannelKey := false
+		for _, ch := range channels {
+			if channelMatches(k, &ch) {
+				isChannelKey = true
+				break
+			}
+		}
+		if !isChannelKey {
+			if extraCount == 0 {
+				sb.WriteString("🔖 <b>Інші збережені підписи:</b>\n")
+			}
+			sb.WriteString(fmt.Sprintf("• %s:\n  %s\n", k, v))
+			extraCount++
+		}
+	}
+
+	sb.WriteString("\n💡 <i>Змінити:</i> <code>/setsig &lt;текст&gt;</code> або <code>/setsig &lt;канал&gt; &lt;текст&gt;</code>")
 	_ = h.bot.SendTextReply(msg.Chat.ID, sb.String(), msg.MessageID)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// isAdmin returns true when the message sender is allowed to manage signatures.
-// If adminUserIDs is empty, everyone is allowed.
+func (h *Handler) getChannels() []telegram.ChannelInfo {
+	if h.channelProvider == nil {
+		return nil
+	}
+	return h.channelProvider()
+}
+
 func (h *Handler) isAdmin(msg *notifier.BotMessage) bool {
 	if len(h.adminUserIDs) == 0 {
 		return true
@@ -246,15 +429,12 @@ func (h *Handler) isAdmin(msg *notifier.BotMessage) bool {
 	return false
 }
 
-// parseCommand splits a bot message text into the command and its arguments.
-// The command is lowercased and any "@BotName" suffix is stripped.
 func parseCommand(text string) (cmd, args string) {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
 		return "", ""
 	}
 	raw := strings.ToLower(fields[0])
-	// Strip @BotUsername suffix
 	if idx := strings.Index(raw, "@"); idx > 0 {
 		raw = raw[:idx]
 	}
@@ -265,17 +445,64 @@ func parseCommand(text string) (cmd, args string) {
 	return cmd, args
 }
 
-// parseChannelAndRest splits "/setsig args" remainder into the channel
-// identifier (first token) and the rest of the string (signature text).
-// hasText is false when no text follows the channel identifier.
-func parseChannelAndRest(args string) (channelKey, rest string, hasText bool) {
-	args = strings.TrimSpace(args)
-	if args == "" {
-		return "", "", false
-	}
-	idx := strings.IndexByte(args, ' ')
+func splitFirstWord(s string) (first, rest string) {
+	s = strings.TrimSpace(s)
+	idx := strings.IndexByte(s, ' ')
 	if idx < 0 {
-		return args, "", false
+		return s, ""
 	}
-	return args[:idx], strings.TrimSpace(args[idx+1:]), true
+	return s[:idx], strings.TrimSpace(s[idx+1:])
+}
+
+func channelMatches(query string, ch *telegram.ChannelInfo) bool {
+	norm := filter.NormalizeChannelKey(query)
+	if norm == "" {
+		return false
+	}
+	if norm == filter.NormalizeChannelKey(ch.Username) && ch.Username != "" {
+		return true
+	}
+	if norm == filter.NormalizeChannelKey(ch.ConfigName) && ch.ConfigName != "" {
+		return true
+	}
+	if ch.ID != 0 {
+		if norm == fmt.Sprintf("-100%d", ch.ID) || norm == fmt.Sprintf("%d", ch.ID) {
+			return true
+		}
+	}
+	if ch.Title != "" && strings.EqualFold(strings.TrimSpace(query), strings.TrimSpace(ch.Title)) {
+		return true
+	}
+	return false
+}
+
+func channelKey(ch *telegram.ChannelInfo) string {
+	if ch.Username != "" {
+		return filter.NormalizeChannelKey(ch.Username)
+	}
+	if ch.ID != 0 {
+		return fmt.Sprintf("-100%d", ch.ID)
+	}
+	return filter.NormalizeChannelKey(ch.ConfigName)
+}
+
+func looksLikeChannelIdentifier(s string) bool {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "@") || strings.HasPrefix(s, "-100") || strings.HasPrefix(s, "t.me/") {
+		return true
+	}
+	// Check if all digits
+	if len(s) > 3 {
+		allDigits := true
+		for i := 0; i < len(s); i++ {
+			if s[i] < '0' || s[i] > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return true
+		}
+	}
+	return false
 }
