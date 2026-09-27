@@ -391,14 +391,28 @@ func (h *Handler) handleSetSig(msg *notifier.BotMessage, args string) {
 	}
 
 	// 3. Check if firstWord looks like an explicit channel username or numeric ID
-	if looksLikeChannelIdentifier(firstWord) && rest != "" {
+	if looksLikeChannelIdentifier(firstWord) {
 		targetKey := filter.NormalizeChannelKey(firstWord)
+		if rest == "" {
+			cur := h.sigStore.Get(targetKey)
+			if cur == "" {
+				_ = h.bot.SendTextReply(msg.Chat.ID,
+					fmt.Sprintf("ℹ️ Підпис для <code>%s</code> не встановлено.\n\nВкажіть текст: <code>/setsig %s &lt;текст&gt;</code>", html.EscapeString(targetKey), html.EscapeString(firstWord)),
+					msg.MessageID)
+			} else {
+				_ = h.bot.SendTextReply(msg.Chat.ID,
+					fmt.Sprintf("📝 Поточний підпис для <code>%s</code>:\n%s\n\n💡 Видалити: <code>/clearsig %s</code>", html.EscapeString(targetKey), html.EscapeString(cur), html.EscapeString(firstWord)),
+					msg.MessageID)
+			}
+			return
+		}
+
 		_ = h.sigStore.Set(targetKey, rest)
 		h.logger.Info("custom signature set for identifier",
 			slog.String("key", targetKey),
 			slog.String("sig", rest),
 			slog.Int64("by_user", msg.From.ID))
-		_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("✅ Підпис для %q встановлено:\n%s", targetKey, html.EscapeString(rest)), msg.MessageID)
+		_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("✅ Підпис для <code>%s</code> встановлено:\n%s", html.EscapeString(targetKey), html.EscapeString(rest)), msg.MessageID)
 		return
 	}
 
@@ -427,7 +441,11 @@ func (h *Handler) handleClearSig(msg *notifier.BotMessage, args string) {
 		_ = h.sigStore.Clear("default")
 		channels := h.getChannels()
 		if len(channels) == 1 {
-			_ = h.sigStore.Clear(channelKey(&channels[0]))
+			_ = h.sigStore.ClearForChannel(
+				channelKey(&channels[0]),
+				channels[0].Username,
+				fmt.Sprintf("-100%d", channels[0].ID),
+			)
 		}
 		_ = h.bot.SendTextReply(msg.Chat.ID, "🗑 Загальний підпис видалено.", msg.MessageID)
 		return
@@ -443,20 +461,32 @@ func (h *Handler) handleClearSig(msg *notifier.BotMessage, args string) {
 	}
 
 	channels := h.getChannels()
-	var keyToClear string
-	for _, ch := range channels {
-		if channelMatches(target, &ch) {
-			keyToClear = channelKey(&ch)
+	var matchedChannel *telegram.ChannelInfo
+	for i := range channels {
+		if channelMatches(target, &channels[i]) {
+			matchedChannel = &channels[i]
 			break
 		}
 	}
-	if keyToClear == "" {
-		keyToClear = filter.NormalizeChannelKey(target)
+
+	if matchedChannel != nil {
+		_ = h.sigStore.ClearForChannel(
+			matchedChannel.Username,
+			matchedChannel.ConfigName,
+			fmt.Sprintf("-100%d", matchedChannel.ID),
+			fmt.Sprintf("%d", matchedChannel.ID),
+			matchedChannel.Title,
+			target,
+		)
+		h.logger.Info("channel signatures cleared", slog.Int64("channel_id", matchedChannel.ID))
+		_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("🗑 Підпис для каналу <b>%s</b> видалено.", html.EscapeString(matchedChannel.Title)), msg.MessageID)
+		return
 	}
 
-	_ = h.sigStore.Clear(keyToClear)
-	h.logger.Info("channel signature cleared", slog.String("channel_key", keyToClear), slog.Int64("by_user", msg.From.ID))
-	_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("🗑 Підпис для %q видалено.", keyToClear), msg.MessageID)
+	normKey := filter.NormalizeChannelKey(target)
+	_ = h.sigStore.ClearForChannel(normKey, target)
+	h.logger.Info("signatures cleared for key", slog.String("key", normKey))
+	_ = h.bot.SendTextReply(msg.Chat.ID, fmt.Sprintf("🗑 Підпис для <code>%s</code> видалено.", html.EscapeString(normKey)), msg.MessageID)
 }
 
 // ── /listsig ──────────────────────────────────────────────────────────────────

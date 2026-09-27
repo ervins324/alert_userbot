@@ -13,3 +13,6 @@ session.bin
 monitor-test.log
 monitor-test-err.log
 monitor-test.log
+
+coverage.out
+*.out

@@ -118,6 +118,30 @@ func (s *SignatureStore) Clear(key string) error {
 	return s.saveLocked()
 }
 
+// ClearForChannel removes signatures for all candidate keys associated with a channel.
+func (s *SignatureStore) ClearForChannel(candidates ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		norm := NormalizeChannelKey(c)
+		if norm == "" {
+			continue
+		}
+		delete(s.sigs, norm)
+		if strings.HasPrefix(norm, "-100") {
+			delete(s.sigs, strings.TrimPrefix(norm, "-100"))
+		} else if isNumeric(norm) {
+			delete(s.sigs, "-100"+norm)
+		}
+	}
+
+	return s.saveLocked()
+}
+
 // GetForChannel searches the store using candidate channel identifiers in order.
 // If any candidate matches, its signature is returned. If none match, it falls
 // back to the global default signature ("default", "all", "*").
