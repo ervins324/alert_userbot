@@ -10,7 +10,6 @@ import (
 
 	"alert-userbot/internal/filter"
 	"alert-userbot/internal/geomap"
-	"alert-userbot/internal/geoparse"
 	"alert-userbot/internal/notifier"
 	"alert-userbot/internal/telegram"
 )
@@ -29,6 +28,7 @@ type Handler struct {
 	sigStore     *filter.SignatureStore
 	channels     ChannelManager
 	adminUserIDs []int64 // if empty, any user in chat may manage channels and signatures
+	geocoder     *geomap.Geocoder
 	logger       *slog.Logger
 }
 
@@ -48,6 +48,7 @@ func NewHandler(
 		sigStore:     sigStore,
 		channels:     channels,
 		adminUserIDs: adminUserIDs,
+		geocoder:     geomap.NewGeocoder(nil, logger),
 		logger:       logger,
 	}
 }
@@ -269,9 +270,12 @@ func (h *Handler) handleMap(msg *notifier.BotMessage, args string) {
 		return
 	}
 
-	loc := geoparse.ExtractLocation(targetText)
-	if loc == nil || (len(loc.MatchedRaions) == 0 && len(loc.Points) == 0) {
-		noLocMsg := "⚠️ Не вдалося розпізнати район або орієнтир у Києві.\nСпробуйте уточнити: /map [назва району/масиву] (наприклад: /map Дарницький або /map Борщагівка)"
+	geoCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	loc, err := h.geocoder.Resolve(geoCtx, targetText)
+	if err != nil || loc == nil || (len(loc.MatchedRaions) == 0 && len(loc.Points) == 0) {
+		noLocMsg := fmt.Sprintf("⚠️ Не вдалося розпізнати або знайти локацію %q у Києві.\nСпробуйте уточнити: /map [назва району, вулиця або орієнтир] (наприклад: /map Позняки або /map Хрещатик)", html.EscapeString(targetText))
 		_ = h.bot.SendTextReply(msg.Chat.ID, noLocMsg, msg.MessageID)
 		return
 	}

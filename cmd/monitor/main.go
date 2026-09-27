@@ -14,7 +14,6 @@ import (
 	"alert-userbot/internal/command"
 	"alert-userbot/internal/filter"
 	"alert-userbot/internal/geomap"
-	"alert-userbot/internal/geoparse"
 	"alert-userbot/internal/notifier"
 	"alert-userbot/internal/telegram"
 )
@@ -89,9 +88,10 @@ func main() {
 			sampleText = os.Args[2]
 		}
 		logger.Info("Generating test map", slog.String("query", sampleText))
-		loc := geoparse.ExtractLocation(sampleText)
-		if loc == nil {
-			logger.Error("Could not extract location from test query", slog.String("query", sampleText))
+		geocoder := geomap.NewGeocoder(nil, logger)
+		loc, err := geocoder.Resolve(ctx, sampleText)
+		if err != nil || loc == nil {
+			logger.Error("Could not extract or resolve location from test query", slog.String("query", sampleText))
 			os.Exit(1)
 		}
 		imgData, err := geomap.RenderKyivMap(loc)

@@ -3,6 +3,7 @@ package geomap
 import (
 	"bytes"
 	"fmt"
+	"image/color"
 	"image/png"
 	"math"
 
@@ -13,15 +14,20 @@ import (
 )
 
 // RenderKyivMap generates an OpenStreetMap static map using go-staticmaps.
-// The map zooms in and frames the requested location without drawing markers or overlays.
+// It zooms in to the requested location and places pin markers for specific points.
 func RenderKyivMap(loc *geoparse.LocationResult) ([]byte, error) {
 	ctx := sm.NewContext()
 	ctx.SetTileProvider(sm.NewTileProviderOpenStreetMaps())
 	ctx.SetSize(1000, 750)
 	ctx.SetUserAgent("KyivAirAlertMonitor/1.0 (https://github.com/alert-userbot)")
 
-	// 1. Zoom to requested specific locations (without drawing pin markers)
+	// 1. Add pin markers and zoom to requested specific locations
 	if loc != nil && len(loc.Points) > 0 {
+		pinColor := color.RGBA{R: 220, G: 20, B: 60, A: 255}
+		for _, pt := range loc.Points {
+			ctx.AddMarker(sm.NewMarker(s2.LatLngFromDegrees(pt.Lat, pt.Lon), pinColor, 16.0))
+		}
+
 		if len(loc.Points) == 1 {
 			// Single specific location: zoom directly into the neighborhood (zoom 14)
 			pt := loc.Points[0]
